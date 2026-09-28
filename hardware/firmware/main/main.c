@@ -24,7 +24,7 @@ void app_main(void)
     ESP_ERROR_CHECK(motif_ble_start());
     while (true) {
         motif_player_loop();
-        lv_timer_handler();
+        if (!motif_player_has_animation()) lv_timer_handler();
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }

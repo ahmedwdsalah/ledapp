@@ -16,7 +16,7 @@ type PreviewSelection = {
 const PreviewSelectionContext = createContext<PreviewSelection | null>(null);
 
 export function PreviewSelectionProvider({ children }: PropsWithChildren) {
-  const [previewId, setPreviewId] = useState(1);
+  const [previewId, setPreviewId] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [libraryQuery, setLibraryQuery] = useState('');
   const [libraryCategory, setLibraryCategory] = useState<'All' | GalleryCategory>('Emblems');

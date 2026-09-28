@@ -13,7 +13,8 @@ import { scheduleOnRN } from 'react-native-worklets';
 import { DisplayBadge } from '@/components/display-badge';
 import { ConnectDisplay } from '@/device/connect-display';
 import { savedDisplay, uploadAnimation } from '@/device/motif-device';
-import { galleryItems, type GalleryItem } from '@/constants/gallery-art';
+import { recordConnection } from '@/device/connection-log';
+import { toyotaAnimation, type GalleryItem } from '@/constants/gallery-art';
 import { usePreviewSelection } from '@/context/preview-selection';
 import { useDynamicNotifications } from '@/hooks/use-dynamic-notifications';
 
@@ -21,6 +22,7 @@ type HomeSection = 'My Library' | 'Individuals' | 'Packs';
 const sections: HomeSection[] = ['My Library', 'Individuals', 'Packs'];
 const INK = '#08090B';
 const CORAL = '#F05850';
+const displayItems = [toyotaAnimation];
 let didShowNotificationPreview = false;
 
 export default function DisplayScreen() {
@@ -31,20 +33,20 @@ export default function DisplayScreen() {
   const list = useRef<FlatList<GalleryItem>>(null);
   const blurTarget = useRef<View | null>(null);
   const currentId = useRef(previewId);
-  const [section, setSection] = useState<HomeSection>('Packs');
+  const [section, setSection] = useState<HomeSection>('Individuals');
   const [connectOpen, setConnectOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const heroWidth = width - 32;
   const heroSize = Math.min(heroWidth * 0.78, 320);
   const heroHeight = heroWidth;
   const cellWidth = (width - 64) / 3;
-  const current = galleryItems[previewId];
-  const heroImageSize = current.framed ? heroSize * 1.42 : heroSize * 0.86;
+  const current = displayItems[0];
+  const heroImageSize = heroSize;
 
   const visibleItems = useMemo(() => {
-    if (section === 'My Library') return selectedId === null ? [] : [galleryItems[selectedId]];
-    if (section === 'Packs') return galleryItems.slice(0, 13);
-    return galleryItems;
+    if (section === 'My Library') return selectedId === null ? [] : displayItems;
+    if (section === 'Packs') return [];
+    return displayItems;
   }, [section, selectedId]);
 
   const notify = useCallback((item: GalleryItem, title: string) => {
@@ -68,7 +70,7 @@ export default function DisplayScreen() {
     if (didShowNotificationPreview) return;
     const timer = setTimeout(() => {
       didShowNotificationPreview = true;
-      notify(galleryItems[currentId.current], 'Preview ready');
+      notify(displayItems[0], 'Preview ready');
     }, 1200);
     return () => clearTimeout(timer);
   }, [notify]);
@@ -87,7 +89,7 @@ export default function DisplayScreen() {
   }, [setPreviewId, setSelectedId]);
 
   const step = useCallback((direction: number) => {
-    show((currentId.current + direction + galleryItems.length) % galleryItems.length);
+    show((currentId.current + direction + displayItems.length) % displayItems.length);
   }, [show]);
 
   const swipeGesture = Gesture.Pan()
@@ -111,14 +113,15 @@ export default function DisplayScreen() {
     setUploading(true);
     try {
       if (!(await savedDisplay())) { setConnectOpen(true); return; }
-      await uploadAnimation(current.image);
+      await uploadAnimation(current.deviceData);
       setSelectedId(previewId);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       notify(current, 'Playing on display');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Upload failed';
+      recordConnection('Upload error', message);
       notify(current, message);
-      if (/connect|Bluetooth|Peripheral|not found|offline/i.test(message)) setConnectOpen(true);
+      if (/connect|Bluetooth|Peripheral|not found|offline|pair/i.test(message)) setConnectOpen(true);
     } finally { setUploading(false); }
   }
 
@@ -188,12 +191,6 @@ export default function DisplayScreen() {
             ))}
           </View>
 
-          {section === 'Packs' && (
-            <View style={styles.features}>
-              <ReferenceBanner title="Sharingan" width={width - 32} cropTop={1664} cropHeight={336} onPress={() => show(1, true)} />
-              <ReferenceBanner title="Rorschach" width={width - 32} cropTop={2034} cropHeight={340} onPress={() => show(2, true)} />
-            </View>
-          )}
         </View>
       }
       ListEmptyComponent={section === 'My Library' ? (
@@ -203,40 +200,21 @@ export default function DisplayScreen() {
             <Text style={styles.emptyActionText}>Browse animations</Text>
           </Pressable>
         </View>
-      ) : null}
+      ) : section === 'Packs' ? <View style={styles.empty}><Text style={styles.emptyText}>No packs yet</Text></View> : null}
       renderItem={({ item }) => (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Show ${item.name}`}
-          accessibilityState={{ selected: item.id === previewId }}
-          onPress={() => show(item.id, true)}
-          style={({ pressed }) => [styles.cell, { width: cellWidth, height: cellWidth }, item.id === previewId && styles.cellActive, pressed && styles.pressed]}>
+          accessibilityState={{ selected: previewId === 0 }}
+          onPress={() => show(0, true)}
+          style={({ pressed }) => [styles.cell, { width: cellWidth, height: cellWidth }, previewId === 0 && styles.cellActive, pressed && styles.pressed]}>
           <DisplayBadge item={item} size={cellWidth * 0.78} />
-          {item.id === selectedId && <View style={styles.selectedDot} />}
+          {selectedId === 0 && <View style={styles.selectedDot} />}
         </Pressable>
       )}
     />
     <ConnectDisplay visible={connectOpen} onClose={() => setConnectOpen(false)} onConnected={() => { setConnectOpen(false); uploadToDevice(); }} />
     </>
-  );
-}
-
-function ReferenceBanner({ title, width, cropTop, cropHeight, onPress }: {
-  title: string;
-  width: number;
-  cropTop: number;
-  cropHeight: number;
-  onPress: () => void;
-}) {
-  const scale = width / 1194;
-  return (
-    <Pressable accessibilityRole="button" accessibilityLabel={title} onPress={onPress} style={[styles.referenceBanner, { width, height: cropHeight * scale }]}>
-      <Image
-        source={require('../../assets/images/home-reference.png')}
-        contentFit="fill"
-        style={{ position: 'absolute', width: 1290 * scale, height: 2796 * scale, left: -48 * scale, top: -cropTop * scale }}
-      />
-    </Pressable>
   );
 }
 
@@ -257,8 +235,6 @@ const styles = StyleSheet.create({
   segmentSelected: { backgroundColor: '#39393C' },
   segmentText: { color: '#A9A9AE', fontSize: 13, fontWeight: '600' },
   segmentTextSelected: { color: '#F7F7F7' },
-  features: { gap: 10, marginHorizontal: -8, marginBottom: 16 },
-  referenceBanner: { borderRadius: 18, overflow: 'hidden', backgroundColor: '#151517' },
   row: { gap: 8, marginBottom: 8 },
   cell: { borderRadius: 20, backgroundColor: '#111113', borderWidth: 1, borderColor: '#252528', alignItems: 'center', justifyContent: 'center' },
   cellActive: { borderColor: '#F05850' },

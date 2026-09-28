@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include "esp_err.h"
 
-#define MOTIF_MAX_GIF_BYTES (4 * 1024 * 1024)
+#define MOTIF_MAX_ANIMATION_BYTES (4 * 1024 * 1024)
 
 esp_err_t motif_state_init(void);
 void motif_state_device_id(char out[7]);

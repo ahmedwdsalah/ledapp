@@ -4,9 +4,9 @@
 #include <stdint.h>
 #include "esp_err.h"
 
-#define MOTIF_GIF_PATH "/media/test.gif"
-#define MOTIF_GIF_PART_PATH "/media/test.gif.part"
-#define MOTIF_GIF_BACKUP_PATH "/media/test.gif.bak"
+#define MOTIF_ANIMATION_PATH "/media/current.motif"
+#define MOTIF_ANIMATION_PART_PATH "/media/current.motif.part"
+#define MOTIF_ANIMATION_BACKUP_PATH "/media/current.motif.bak"
 
 typedef enum {
     MOTIF_PLAYER_IDLE = 0,
@@ -18,6 +18,7 @@ typedef enum {
 esp_err_t motif_player_mount(void);
 void motif_player_init_ui(void);
 void motif_player_loop(void);
+bool motif_player_has_animation(void);
 bool motif_player_request_apply(uint32_t *generation);
 void motif_player_status(uint32_t *generation, motif_player_state_t *state);
 void motif_player_show_passkey(uint32_t passkey);

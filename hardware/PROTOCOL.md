@@ -8,11 +8,11 @@ The display advertises `MOTIF-` followed by its last three MAC bytes and the ser
 
 | Characteristic | UUID | Value |
 | --- | --- | --- |
-| Info | `6edddece-b1f3-4cfb-9f64-127e68a2b9d3` | 16 bytes: protocol version (1), Wi-Fi state (1), IPv4 address (4, network order; zeros when offline), MAC (6), max GIF bytes (4, little-endian) |
+| Info | `6edddece-b1f3-4cfb-9f64-127e68a2b9d3` | 16 bytes: protocol version (1), Wi-Fi state (1), IPv4 address (4, network order; zeros when offline), MAC (6), max animation bytes (4, little-endian) |
 | Provision | `3eae6aab-3e28-4768-b019-affe73047fd7` | Encrypted write with response. Start `[1, length_lo, length_hi]`, data `[2, offset_lo, offset_hi, ...bytes]`, commit `[3]`. Payload is `[ssid_length, password_length, ...ssid, ...password]`. The display requires authenticated BLE pairing. |
 | Upload key | `692d6042-d8fa-498b-a4db-8a7401d47baf` | Encrypted read: 16 random bytes, hex-encoded by the app for HTTP authorization. |
 
-The display shows a fresh six-digit BLE passkey during pairing. It stores Wi-Fi credentials and the upload key in NVS. The app stores the upload key in the device keychain/keystore. After provisioning, the app reads the current IP from Info on every upload; it does not rely on an old DHCP address.
+The display shows a fresh six-digit BLE passkey during pairing. It stores Wi-Fi credentials, BLE bond keys, and the upload key in NVS. Bond keys survive reboots; a one-time migration to persistent bonding rotates the BLE identity so phones can pair afresh. The app stores the upload key and last known IP in the device keychain/keystore. Status checks and uploads use authenticated local HTTP first; if the cached IP stops responding, the app reconnects over BLE to read the current address from Info.
 
 ## Local HTTP
 
@@ -21,8 +21,9 @@ The display listens on port 8080 on its Wi-Fi station address. The app and displ
 | Request | Result |
 | --- | --- |
 | `GET /v1/status` | JSON: `protocol`, `deviceId`, `wifiConnected`, `generation`, `state` (`idle`, `applying`, `playing`, or `error`) |
-| `POST /v1/animation` | Raw `image/gif` body. Maximum 4 MiB; GIF89a, dimensions 1–480 in each axis. Streams to `/media/test.gif.part` in the internal flash media partition, validates it, and schedules an atomic replacement of `/media/test.gif`. Returns `202` with a generation. |
+| `GET /v1/diagnostics` | JSON: last 32 timestamped board events for Wi-Fi, BLE pairing, upload progress, and playback. Requires the same bearer token; does not include credentials. |
+| `POST /v1/animation` | Raw `application/x-motif-animation` body. Maximum 4 MiB. Streams to `/media/current.motif.part` in internal flash, validates the header, and schedules replacement of `/media/current.motif`. Returns `202` with a generation. |
 
-The app polls status until the returned generation is playing, then shows success. A failed or interrupted transfer retains the previously playing GIF. The board does not require a microSD card for upload or playback.
+An animation starts with `MOTF`, version `1`, flags `0`, little-endian width and height `480`, and a little-endian frame count (`1–255`). Each frame contains a little-endian duration in milliseconds (`20–1000`), compressed byte count, and one zlib-compressed 480 × 480 RGB565 frame. The board loads the stream into PSRAM, decompresses directly into its full-resolution RGB565 draw buffer, and draws it without scaling. The app polls status until the returned generation is playing. A failed transfer keeps the previous animation. No microSD card is required.
 
 The plain HTTP transport is confined to the user's Wi-Fi network. BLE pairing protects Wi-Fi credentials and the upload key during provisioning; TLS or application-layer content encryption should be added before treating shared or untrusted LANs as supported environments.

@@ -3,16 +3,32 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "esp_spiffs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 #include "lvgl.h"
+#include "miniz.h"
+#include "motif_state.h"
+#include "motif_diagnostics.h"
+#include "ST7701S.h"
+
+#define DISPLAY_WIDTH 480
+#define DISPLAY_HEIGHT 480
+#define DISPLAY_FRAME_BYTES (DISPLAY_WIDTH * DISPLAY_HEIGHT * 2)
 
 static const char *TAG = "motif_player";
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
-static lv_obj_t *s_gif;
+static uint8_t *s_animation;
+static size_t s_animation_length;
+static uint16_t *s_display_frame;
+static const uint8_t *s_frame_cursor;
+static uint16_t s_frame_count;
+static uint16_t s_frame_index;
+static uint32_t s_frame_due;
+static uint32_t s_perf_started, s_perf_frames, s_perf_max_ms, s_perf_total_ms;
 static lv_obj_t *s_message;
 static lv_obj_t *s_detail;
 static lv_obj_t *s_ring;
@@ -27,49 +43,9 @@ static bool s_receiving;
 static bool s_status_dirty;
 static motif_player_state_t s_state = MOTIF_PLAYER_IDLE;
 
-static void *media_open(lv_fs_drv_t *drv, const char *path, lv_fs_mode_t mode)
-{
-    char full[96];
-    if (snprintf(full, sizeof(full), "/media/%s", path) >= sizeof(full)) return NULL;
-    return fopen(full, mode == LV_FS_MODE_RD ? "rb" : "wb");
-}
-
-static lv_fs_res_t media_close(lv_fs_drv_t *drv, void *file)
-{
-    return fclose(file) == 0 ? LV_FS_RES_OK : LV_FS_RES_FS_ERR;
-}
-
-static lv_fs_res_t media_read(lv_fs_drv_t *drv, void *file, void *buffer, uint32_t wanted, uint32_t *read)
-{
-    *read = fread(buffer, 1, wanted, file);
-    return ferror(file) ? LV_FS_RES_FS_ERR : LV_FS_RES_OK;
-}
-
-static lv_fs_res_t media_seek(lv_fs_drv_t *drv, void *file, uint32_t position, lv_fs_whence_t whence)
-{
-    int origin = whence == LV_FS_SEEK_CUR ? SEEK_CUR : whence == LV_FS_SEEK_END ? SEEK_END : SEEK_SET;
-    return fseek(file, position, origin) == 0 ? LV_FS_RES_OK : LV_FS_RES_FS_ERR;
-}
-
-static lv_fs_res_t media_tell(lv_fs_drv_t *drv, void *file, uint32_t *position)
-{
-    long value = ftell(file);
-    if (value < 0) return LV_FS_RES_FS_ERR;
-    *position = value;
-    return LV_FS_RES_OK;
-}
-
-static void register_media_driver(void)
-{
-    static lv_fs_drv_t driver;
-    lv_fs_drv_init(&driver);
-    driver.letter = 'S';
-    driver.open_cb = media_open;
-    driver.close_cb = media_close;
-    driver.read_cb = media_read;
-    driver.seek_cb = media_seek;
-    driver.tell_cb = media_tell;
-    lv_fs_drv_register(&driver);
+static uint16_t read16(const uint8_t *bytes) { return bytes[0] | ((uint16_t)bytes[1] << 8); }
+static uint32_t read32(const uint8_t *bytes) {
+    return bytes[0] | ((uint32_t)bytes[1] << 8) | ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
 }
 
 static bool media_is_blank(void)
@@ -96,39 +72,124 @@ esp_err_t motif_player_mount(void)
     return err;
 }
 
-static bool valid_gif(const char *path)
+static bool valid_animation(const uint8_t *data, size_t length, uint16_t *frame_count)
 {
-    FILE *file = fopen(path, "rb");
-    if (!file) return false;
-    uint8_t header[10];
-    bool good = fread(header, 1, sizeof(header), file) == sizeof(header) &&
-                memcmp(header, "GIF89a", 6) == 0;
-    fclose(file);
-    if (!good) return false;
-    unsigned width = header[6] | (header[7] << 8);
-    unsigned height = header[8] | (header[9] << 8);
-    return width > 0 && width <= 480 && height > 0 && height <= 480;
+    if (length < 18 || memcmp(data, "MOTF", 4) != 0 || data[4] != 1 || data[5] != 0 ||
+        read16(data + 6) != DISPLAY_WIDTH || read16(data + 8) != DISPLAY_HEIGHT) return false;
+    uint16_t count = read16(data + 10);
+    if (!count || count > 255) return false;
+    size_t offset = 12;
+    for (uint16_t i = 0; i < count; ++i) {
+        if (length - offset < 6) return false;
+        uint16_t duration = read16(data + offset);
+        uint32_t compressed = read32(data + offset + 2);
+        offset += 6;
+        if (duration < 20 || duration > 1000 || compressed < 6 || compressed > length - offset) return false;
+        offset += compressed;
+    }
+    if (offset != length) return false;
+    *frame_count = count;
+    return true;
+}
+
+static bool draw_next_frame(void)
+{
+    uint32_t started = esp_log_timestamp();
+    uint32_t frame_started = lv_tick_get();
+    if (s_frame_index == s_frame_count) {
+        s_frame_index = 0;
+        s_frame_cursor = s_animation + 12;
+    }
+    size_t offset = s_frame_cursor - s_animation;
+    if (offset > s_animation_length || s_animation_length - offset < 6) return false;
+    uint16_t duration = read16(s_frame_cursor);
+    uint32_t compressed = read32(s_frame_cursor + 2);
+    if (compressed > s_animation_length - offset - 6) return false;
+    const uint8_t *payload = s_frame_cursor + 6;
+    size_t decoded = tinfl_decompress_mem_to_mem(s_display_frame, DISPLAY_FRAME_BYTES, payload,
+                                                  compressed, TINFL_FLAG_PARSE_ZLIB_HEADER);
+    if (decoded != DISPLAY_FRAME_BYTES) {
+        motif_diag_record("frame_decode_failed", s_frame_index);
+        ESP_LOGE(TAG, "Frame %u decode=%lu compressed=%lu header=%02x%02x", s_frame_index,
+                 (unsigned long)decoded, (unsigned long)compressed, payload[0], payload[1]);
+        return false;
+    }
+    if (esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                  s_display_frame) != ESP_OK) return false;
+    s_frame_cursor = payload + compressed;
+    s_frame_index++;
+    s_frame_due = frame_started + duration;
+    uint32_t elapsed = esp_log_timestamp() - started;
+    if (elapsed > s_perf_max_ms) s_perf_max_ms = elapsed;
+    s_perf_total_ms += elapsed;
+    s_perf_frames++;
+    if (s_perf_started == 0) s_perf_started = esp_log_timestamp();
+    if (esp_log_timestamp() - s_perf_started >= 5000) {
+        motif_diag_record("playback_frames_5s", s_perf_frames);
+        ESP_LOGI("motif_perf", "Playback frames=%lu/5s avg=%lums max=%lums", (unsigned long)s_perf_frames,
+                 (unsigned long)(s_perf_total_ms / s_perf_frames), (unsigned long)s_perf_max_ms);
+        s_perf_started = esp_log_timestamp();
+        s_perf_frames = s_perf_max_ms = s_perf_total_ms = 0;
+    }
+    return true;
 }
 
 static bool play_current(void)
 {
-    if (!valid_gif(MOTIF_GIF_PATH)) return false;
-    if (s_gif) { lv_obj_del(s_gif); s_gif = NULL; }
-    s_gif = lv_gif_create(lv_scr_act());
-    lv_gif_set_src(s_gif, "S:/test.gif");
-    if (!lv_img_get_src(s_gif)) {
-        lv_obj_del(s_gif);
-        s_gif = NULL;
+    FILE *file = fopen(MOTIF_ANIMATION_PATH, "rb");
+    if (!file) return false;
+    if (fseek(file, 0, SEEK_END) != 0) { fclose(file); return false; }
+    long length = ftell(file);
+    if (length < 18 || length > MOTIF_MAX_ANIMATION_BYTES || fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
         return false;
     }
-    lv_obj_align(s_gif, LV_ALIGN_CENTER, 0, 0);
+    uint8_t *incoming = heap_caps_malloc(length, MALLOC_CAP_SPIRAM);
+    if (!incoming) { fclose(file); ESP_LOGE(TAG, "Not enough PSRAM for animation"); return false; }
+    bool complete = fread(incoming, 1, length, file) == length;
+    fclose(file);
+    uint16_t frame_count = 0;
+    if (!complete || !valid_animation(incoming, length, &frame_count)) {
+        heap_caps_free(incoming);
+        ESP_LOGE(TAG, "Invalid animation file");
+        return false;
+    }
+    if (!s_display_frame) s_display_frame = heap_caps_malloc(DISPLAY_FRAME_BYTES, MALLOC_CAP_SPIRAM);
+    if (!s_display_frame) {
+        heap_caps_free(incoming);
+        ESP_LOGE(TAG, "Not enough PSRAM for frame buffers");
+        return false;
+    }
+    uint8_t *previous = s_animation;
+    size_t previous_length = s_animation_length;
+    const uint8_t *previous_cursor = s_frame_cursor;
+    uint16_t previous_count = s_frame_count, previous_index = s_frame_index;
+    s_animation = incoming;
+    s_animation_length = length;
+    s_frame_cursor = incoming + 12;
+    s_frame_count = frame_count;
+    s_frame_index = 0;
+    if (!draw_next_frame()) {
+        s_animation = previous;
+        s_animation_length = previous_length;
+        s_frame_cursor = previous_cursor;
+        s_frame_count = previous_count;
+        s_frame_index = previous_index;
+        heap_caps_free(incoming);
+        ESP_LOGE(TAG, "Could not decompress first frame");
+        return false;
+    }
+    if (previous) heap_caps_free(previous);
     if (s_message) lv_obj_add_flag(s_message, LV_OBJ_FLAG_HIDDEN);
+    if (s_detail) lv_obj_add_flag(s_detail, LV_OBJ_FLAG_HIDDEN);
+    if (s_ring) lv_obj_add_flag(s_ring, LV_OBJ_FLAG_HIDDEN);
+    ESP_LOGI(TAG, "Playing %u frames from PSRAM (%ld bytes)", frame_count, length);
+    motif_diag_record("playback_started", frame_count);
     return true;
 }
 
 void motif_player_init_ui(void)
 {
-    register_media_driver();
     lv_obj_set_style_bg_color(lv_scr_act(), lv_color_black(), LV_PART_MAIN);
     s_ring = lv_obj_create(lv_scr_act());
     lv_obj_set_size(s_ring, 90, 90);
@@ -147,21 +208,23 @@ void motif_player_init_ui(void)
     lv_label_set_text(s_detail, "Open Motif to connect");
     lv_obj_align(s_detail, LV_ALIGN_CENTER, 0, 42);
 
-    if (access(MOTIF_GIF_PATH, F_OK) != 0 && access(MOTIF_GIF_BACKUP_PATH, F_OK) == 0) {
-        rename(MOTIF_GIF_BACKUP_PATH, MOTIF_GIF_PATH);
+    if (access(MOTIF_ANIMATION_PATH, F_OK) != 0 && access(MOTIF_ANIMATION_BACKUP_PATH, F_OK) == 0) {
+        rename(MOTIF_ANIMATION_BACKUP_PATH, MOTIF_ANIMATION_PATH);
     }
-    unlink(MOTIF_GIF_PART_PATH);
+    unlink(MOTIF_ANIMATION_PART_PATH);
     if (play_current()) s_state = MOTIF_PLAYER_PLAYING;
+    else if (access(MOTIF_ANIMATION_PATH, F_OK) == 0) {
+        // Retire the previous 240px format. Show pairing UI until a native upload arrives.
+        unlink(MOTIF_ANIMATION_PATH);
+        s_state = MOTIF_PLAYER_IDLE;
+    }
     s_status_dirty = true;
 }
 
 bool motif_player_request_apply(uint32_t *generation)
 {
     portENTER_CRITICAL(&s_mux);
-    if (s_pending_generation != 0) {
-        portEXIT_CRITICAL(&s_mux);
-        return false;
-    }
+    if (s_pending_generation != 0) { portEXIT_CRITICAL(&s_mux); return false; }
     s_pending_generation = s_generation + 1;
     *generation = s_pending_generation;
     s_state = MOTIF_PLAYER_APPLYING;
@@ -217,15 +280,9 @@ void motif_player_set_receiving(bool receiving)
 
 void motif_player_loop(void)
 {
-    uint32_t passkey;
-    bool update_passkey = false;
-    bool connected, joining, receiving, network_error, status_dirty;
-    uint32_t pending = 0;
+    uint32_t passkey, pending;
+    bool connected, joining, receiving, network_error, status_dirty, passkey_dirty;
     portENTER_CRITICAL(&s_mux);
-    if (s_passkey_dirty) {
-        update_passkey = true;
-        s_passkey_dirty = false;
-    }
     passkey = s_passkey;
     pending = s_pending_generation;
     connected = s_connected;
@@ -233,10 +290,11 @@ void motif_player_loop(void)
     receiving = s_receiving;
     network_error = s_network_error;
     status_dirty = s_status_dirty;
-    s_status_dirty = false;
+    passkey_dirty = s_passkey_dirty;
+    s_status_dirty = s_passkey_dirty = false;
     portEXIT_CRITICAL(&s_mux);
 
-    if ((update_passkey || status_dirty) && s_message) {
+    if ((passkey_dirty || status_dirty) && s_message) {
         if (passkey) {
             char code[12];
             snprintf(code, sizeof(code), "%06lu", (unsigned long)passkey);
@@ -252,48 +310,62 @@ void motif_player_loop(void)
             lv_label_set_text(s_message, "Wi-Fi failed");
             lv_label_set_text(s_detail, "Check network details in Motif");
         } else if (s_state == MOTIF_PLAYER_ERROR) {
-            lv_label_set_text(s_message, "Can't play GIF");
-            lv_label_set_text(s_detail, "Try a different animation");
+            lv_label_set_text(s_message, "Can't play animation");
+            lv_label_set_text(s_detail, "Try a different one in Motif");
         } else if (connected) {
-            lv_label_set_text(s_message, "Connected");
-            lv_label_set_text(s_detail, "Choose an animation in Motif");
+            lv_label_set_text(s_message, "MOTIF");
+            lv_label_set_text(s_detail, "Wi-Fi ready. Open the app.");
         } else {
             lv_label_set_text(s_message, "MOTIF");
             lv_label_set_text(s_detail, "Open Motif to connect");
         }
-        bool visible = passkey || receiving || joining || !s_gif || s_state == MOTIF_PLAYER_ERROR;
-        if (visible) {
+        if (s_animation) {
+            lv_obj_add_flag(s_message, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_detail, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_ring, LV_OBJ_FLAG_HIDDEN);
+        } else {
             lv_obj_clear_flag(s_message, LV_OBJ_FLAG_HIDDEN);
             lv_obj_clear_flag(s_detail, LV_OBJ_FLAG_HIDDEN);
             lv_obj_clear_flag(s_ring, LV_OBJ_FLAG_HIDDEN);
             lv_obj_move_foreground(s_ring);
             lv_obj_move_foreground(s_message);
             lv_obj_move_foreground(s_detail);
-        } else {
-            lv_obj_add_flag(s_message, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_detail, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_ring, LV_OBJ_FLAG_HIDDEN);
         }
     }
-    if (!pending) return;
 
-    if (s_gif) { lv_obj_del(s_gif); s_gif = NULL; }
-    bool had_previous = access(MOTIF_GIF_PATH, F_OK) == 0;
-    if (had_previous) {
-        unlink(MOTIF_GIF_BACKUP_PATH);
-        if (rename(MOTIF_GIF_PATH, MOTIF_GIF_BACKUP_PATH) != 0) had_previous = false;
+    if (pending) {
+        bool had_previous = access(MOTIF_ANIMATION_PATH, F_OK) == 0;
+        if (had_previous) {
+            unlink(MOTIF_ANIMATION_BACKUP_PATH);
+            if (rename(MOTIF_ANIMATION_PATH, MOTIF_ANIMATION_BACKUP_PATH) != 0) had_previous = false;
+        }
+        bool applied = rename(MOTIF_ANIMATION_PART_PATH, MOTIF_ANIMATION_PATH) == 0 && play_current();
+        if (!applied && had_previous) {
+            unlink(MOTIF_ANIMATION_PATH);
+            rename(MOTIF_ANIMATION_BACKUP_PATH, MOTIF_ANIMATION_PATH);
+        }
+        if (applied) unlink(MOTIF_ANIMATION_BACKUP_PATH);
+        portENTER_CRITICAL(&s_mux);
+        s_generation = pending;
+        s_pending_generation = 0;
+        s_state = applied ? MOTIF_PLAYER_PLAYING : MOTIF_PLAYER_ERROR;
+        s_status_dirty = true;
+        portEXIT_CRITICAL(&s_mux);
+        motif_diag_record(applied ? "animation_applied" : "animation_apply_failed", pending);
     }
-    bool applied = rename(MOTIF_GIF_PART_PATH, MOTIF_GIF_PATH) == 0 && play_current();
-    if (!applied && had_previous) {
-        unlink(MOTIF_GIF_PATH);
-        rename(MOTIF_GIF_BACKUP_PATH, MOTIF_GIF_PATH);
-        play_current();
+
+    if (s_animation && (s_state == MOTIF_PLAYER_PLAYING || s_state == MOTIF_PLAYER_ERROR) &&
+        (int32_t)(lv_tick_get() - s_frame_due) >= 0) {
+        if (!draw_next_frame()) {
+            ESP_LOGE(TAG, "Frame decompression failed");
+            heap_caps_free(s_animation);
+            s_animation = NULL;
+            portENTER_CRITICAL(&s_mux);
+            s_state = MOTIF_PLAYER_ERROR;
+            s_status_dirty = true;
+            portEXIT_CRITICAL(&s_mux);
+        }
     }
-    if (applied) unlink(MOTIF_GIF_BACKUP_PATH);
-    portENTER_CRITICAL(&s_mux);
-    s_generation = pending;
-    s_pending_generation = 0;
-    s_state = applied ? MOTIF_PLAYER_PLAYING : MOTIF_PLAYER_ERROR;
-    s_status_dirty = true;
-    portEXIT_CRITICAL(&s_mux);
 }
+
+bool motif_player_has_animation(void) { return s_animation != NULL; }

@@ -30,10 +30,14 @@ esp_err_t motif_state_init(void)
     if (err != ESP_OK) return err;
     size_t token_len = sizeof(s_token);
     err = nvs_get_blob(handle, "upload_key", s_token, &token_len);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
+    uint8_t bond_schema = 0;
+    esp_err_t schema_err = nvs_get_u8(handle, "bond_schema", &bond_schema);
+    if (err == ESP_ERR_NVS_NOT_FOUND || (err == ESP_OK && token_len != sizeof(s_token)) ||
+        schema_err == ESP_ERR_NVS_NOT_FOUND || (schema_err == ESP_OK && bond_schema != 1)) {
         esp_fill_random(s_token, sizeof(s_token));
         token_len = sizeof(s_token);
         err = nvs_set_blob(handle, "upload_key", s_token, sizeof(s_token));
+        if (err == ESP_OK) err = nvs_set_u8(handle, "bond_schema", 1);
         if (err == ESP_OK) err = nvs_commit(handle);
     }
     if (err == ESP_OK && token_len != sizeof(s_token)) err = ESP_ERR_INVALID_SIZE;

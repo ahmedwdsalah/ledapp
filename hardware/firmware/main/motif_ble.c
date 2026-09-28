@@ -14,6 +14,7 @@
 #include "motif_player.h"
 #include "motif_state.h"
 #include "motif_wifi.h"
+#include "motif_diagnostics.h"
 
 void ble_store_config_init(void);
 static uint8_t s_addr_type;
@@ -34,11 +35,13 @@ static int access_characteristic(uint16_t connection, uint16_t handle, struct bl
         motif_state_get_ip(value + 2);
         value[1] = value[2] || value[3] || value[4] || value[5];
         motif_state_mac(value + 6);
-        uint32_t max = MOTIF_MAX_GIF_BYTES;
+        uint32_t max = MOTIF_MAX_ANIMATION_BYTES;
         value[12] = max; value[13] = max >> 8; value[14] = max >> 16; value[15] = max >> 24;
         return os_mbuf_append(ctx->om, value, sizeof(value)) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
     }
     if (which == 3 && ctx->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        motif_diag_record("pairing_key_read", 0);
+        ESP_LOGI("motif_ble", "Authenticated upload key read");
         uint8_t key[16];
         motif_state_token(key);
         return os_mbuf_append(ctx->om, key, sizeof(key)) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
@@ -67,7 +70,10 @@ static int access_characteristic(uint16_t connection, uint16_t handle, struct bl
         memcpy(ssid, s_provision + 2, ssid_len);
         memcpy(password, s_provision + 2 + ssid_len, pass_len);
         s_expected = s_received = 0;
-        return motif_wifi_provision(ssid, password) == ESP_OK ? 0 : BLE_ATT_ERR_UNLIKELY;
+        esp_err_t result = motif_wifi_provision(ssid, password);
+        motif_diag_record("wifi_setup_commit", result);
+        ESP_LOGI("motif_ble", "Wi-Fi provisioning commit: %s", esp_err_to_name(result));
+        return result == ESP_OK ? 0 : BLE_ATT_ERR_UNLIKELY;
     }
     return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
 }
@@ -106,21 +112,36 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 {
     switch (event->type) {
         case BLE_GAP_EVENT_CONNECT:
+            motif_diag_record("ble_connected", event->connect.status);
+            ESP_LOGI("motif_ble", "BLE connect status=%d", event->connect.status);
             if (event->connect.status != 0) advertise();
             return 0;
         case BLE_GAP_EVENT_DISCONNECT:
+            motif_diag_record("ble_disconnected", event->disconnect.reason);
+            ESP_LOGW("motif_ble", "BLE disconnected: reason=%d", event->disconnect.reason);
             s_expected = s_received = 0;
             motif_player_clear_passkey();
             advertise();
             return 0;
         case BLE_GAP_EVENT_PASSKEY_ACTION:
+            motif_diag_record("pairing_requested", event->passkey.params.action);
             if (event->passkey.params.action != BLE_SM_IOACT_DISP) return BLE_ATT_ERR_UNLIKELY;
+            ESP_LOGI("motif_ble", "Authenticated pairing requested");
             struct ble_sm_io io = {.action = BLE_SM_IOACT_DISP, .passkey = esp_random() % 1000000};
             motif_player_show_passkey(io.passkey);
             return ble_sm_inject_io(event->passkey.conn_handle, &io);
         case BLE_GAP_EVENT_ENC_CHANGE:
+            motif_diag_record("pairing_encryption", event->enc_change.status);
+            ESP_LOGI("motif_ble", "BLE encryption change status=%d", event->enc_change.status);
             motif_player_clear_passkey();
             return 0;
+        case BLE_GAP_EVENT_REPEAT_PAIRING: {
+            struct ble_gap_conn_desc desc;
+            if (ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc) == 0) {
+                ble_store_util_delete_peer(&desc.peer_id_addr);
+            }
+            return BLE_GAP_REPEAT_PAIRING_RETRY;
+        }
         case BLE_GAP_EVENT_ADV_COMPLETE:
             advertise();
             return 0;
@@ -130,7 +151,14 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 
 static void on_sync(void)
 {
-    if (ble_hs_id_infer_auto(0, &s_addr_type) == 0) advertise();
+    uint8_t token[16];
+    motif_state_token(token);
+    uint8_t address[6] = {token[0], token[1], token[2], token[3], token[4],
+                          (uint8_t)((token[5] & 0x3f) | 0xc0)};
+    if (ble_hs_id_set_rnd(address) == 0) {
+        s_addr_type = BLE_OWN_ADDR_RANDOM;
+        advertise();
+    }
 }
 
 static void host_task(void *param)

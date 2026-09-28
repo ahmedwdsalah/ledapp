@@ -9,9 +9,11 @@
 #include "motif_http.h"
 #include "motif_player.h"
 #include "motif_state.h"
+#include "motif_diagnostics.h"
 
 static const char *TAG = "motif_wifi";
 static bool s_wifi_started;
+static volatile bool s_reprovisioning;
 
 static void configure_station(const char *ssid, const char *password)
 {
@@ -32,9 +34,21 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t event_id, vo
         }
     } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *disconnected = event_data;
+        motif_diag_record("wifi_disconnected", disconnected->reason);
+        ESP_LOGW(TAG, "Wi-Fi disconnected: reason=%u rssi=%d", disconnected->reason, disconnected->rssi);
         const uint8_t empty_ip[4] = {0};
         motif_state_set_ip(empty_ip);
         motif_http_stop();
+        if (s_reprovisioning) {
+            s_reprovisioning = false;
+            char ssid[33], password[65];
+            if (motif_state_wifi_credentials(ssid, password)) {
+                configure_station(ssid, password);
+                motif_player_set_connection(false, true);
+                esp_wifi_connect();
+            }
+            return;
+        }
         if (disconnected->reason == WIFI_REASON_AUTH_FAIL ||
             disconnected->reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT ||
             disconnected->reason == WIFI_REASON_NO_AP_FOUND) {
@@ -49,6 +63,7 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t event_id, vo
     } else if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         const ip_event_got_ip_t *got = event_data;
         uint8_t ip[4] = {IP2STR(&got->ip_info.ip)};
+        motif_diag_record("wifi_connected", 0);
         motif_state_set_ip(ip);
         motif_player_set_connection(true, false);
         esp_err_t err = motif_http_start();
@@ -71,6 +86,7 @@ esp_err_t motif_wifi_start(void)
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, event_handler, NULL));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     char ssid[33], password[65];
     if (motif_state_wifi_credentials(ssid, password)) configure_station(ssid, password);
     err = esp_wifi_start();
@@ -83,9 +99,15 @@ esp_err_t motif_wifi_provision(const char *ssid, const char *password)
     if (!s_wifi_started) return ESP_ERR_INVALID_STATE;
     esp_err_t err = motif_state_save_wifi(ssid, password);
     if (err != ESP_OK) return err;
-    err = esp_wifi_disconnect();
-    if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_CONNECT) return err;
-    configure_station(ssid, password);
     motif_player_set_connection(false, true);
+    wifi_ap_record_t current_ap;
+    if (esp_wifi_sta_get_ap_info(&current_ap) == ESP_OK) {
+        s_reprovisioning = true;
+        err = esp_wifi_disconnect();
+        if (err == ESP_OK) return ESP_OK;
+        s_reprovisioning = false;
+        if (err != ESP_ERR_WIFI_NOT_CONNECT) return err;
+    }
+    configure_station(ssid, password);
     return esp_wifi_connect();
 }

@@ -15,8 +15,10 @@
         "NSBluetoothAlwaysUsageDescription": "Find and pair with your Motif display.",
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
-        }
-      }
+        },
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bundleIdentifier": "com.ahmedsalah998.motif"
     },
     "android": {
       "adaptiveIcon": {
@@ -24,7 +26,12 @@
         "foregroundImage": "./assets/images/motif-foreground.png",
         "monochromeImage": "./assets/images/motif-foreground.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_CONNECT"
+      ]
     },
     "web": {
       "output": "static",
@@ -46,6 +53,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "a33056ed-bd0c-4b87-be59-3cca6e208c48"
+      }
     }
   }
 }

@@ -1,11 +1,19 @@
 {
   "build": {
+    "development": {
+      "pnpm": "10.33.2",
+      "developmentClient": true,
+      "distribution": "internal",
+      "environment": "development"
+    },
     "internal": {
+      "pnpm": "10.33.2",
       "distribution": "internal",
       "environment": "preview",
       "channel": "internal"
     },
     "production": {
+      "pnpm": "10.33.2",
       "distribution": "store",
       "environment": "production",
       "channel": "production"

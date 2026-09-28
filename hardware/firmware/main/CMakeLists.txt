@@ -4,6 +4,7 @@ idf_component_register(
         "motif_state.c"
         "motif_wifi.c"
         "motif_ble.c"
+        "motif_diagnostics.c"
         "motif_http.c"
         "motif_player.c"
         "EXIO/TCA9554PWR.c"
@@ -17,6 +18,6 @@ idf_component_register(
         "." "EXIO" "LCD_Driver" "Touch_Driver"
         "Touch_Driver/esp_lcd_touch" "LVGL_Driver" "I2C_Driver" "Buzzer"
     PRIV_REQUIRES
-        bt driver esp_lcd esp_event esp_http_server esp_netif esp_wifi
+        bt driver esp_lcd esp_rom esp_event esp_http_server esp_netif esp_wifi
         nvs_flash spiffs mbedtls
 )

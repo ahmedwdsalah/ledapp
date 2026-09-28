@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { pairDisplay, scanDisplays, type MotifDevice } from './motif-device';
+import { displayError, getDisplayStatus, pairDisplay, scanDisplays, type MotifDevice } from './motif-device';
+import { recordConnection } from './connection-log';
 
 export function ConnectDisplay({ visible, onClose, onConnected }: {
   visible: boolean;
@@ -12,48 +13,90 @@ export function ConnectDisplay({ visible, onClose, onConnected }: {
   const [ssid, setSsid] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
+  const [waiting, setWaiting] = useState(false);
   const [message, setMessage] = useState('');
+  const activeDevice = selected;
+
+  useEffect(() => {
+    if (!visible || !waiting) return;
+    let cancelled = false;
+    let checking = false;
+    const started = Date.now();
+    const timer = setInterval(async () => {
+      if (checking || cancelled) return;
+      if (Date.now() - started > 30000) {
+        clearInterval(timer);
+        setWaiting(false);
+        setMessage('The display did not join Wi-Fi. Check the network details and try again.');
+        return;
+      }
+      checking = true;
+      try {
+        const status = await getDisplayStatus();
+        if (!cancelled && status?.reachable) {
+          clearInterval(timer);
+          setWaiting(false);
+          setSelected(null);
+          onConnected();
+        }
+      } catch { /* The display may be switching from Bluetooth to Wi-Fi. */ }
+      finally { checking = false; }
+    }, 2000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [visible, waiting, onConnected]);
+
+  function close() { setWaiting(false); setSelected(null); onClose(); }
 
   async function search() {
-    setBusy(true); setMessage('Searching for nearby displays…');
+    setWaiting(false); setSelected(null); setBusy(true); setMessage('Searching for nearby displays…');
     try {
       const next = await scanDisplays();
       setDevices(next);
+      if (next.length === 1) setSelected(next[0]);
       setMessage(next.length ? '' : 'No Motif display found nearby.');
-    } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    } catch (error) {
+      const detail = displayError(error, 'Could not search for displays. Check Bluetooth and try again.');
+      recordConnection('Discovery error', detail);
+      setMessage(detail);
+    }
     finally { setBusy(false); }
   }
 
   async function connect() {
-    if (!selected) return;
+    if (!activeDevice) return;
     setBusy(true); setMessage('Check the pairing code on your display.');
     try {
-      const info = await pairDisplay(selected.id, ssid, password);
-      if (!info.ip) setMessage('Paired. Waiting for the display to join Wi-Fi.');
-      else { setMessage('Display connected.'); onConnected(); }
-    } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+      const info = await pairDisplay(activeDevice.id, ssid, password);
+      const status = info.ip ? await getDisplayStatus() : null;
+      if (status?.reachable) { setMessage('Display connected.'); setSelected(null); onConnected(); }
+      else { setMessage('Paired. Waiting for the display to join Wi-Fi.'); setWaiting(true); }
+    } catch (error) {
+      const detail = displayError(error, 'Could not connect. Check the Wi-Fi details and try again.');
+      recordConnection('Pairing error', detail);
+      setMessage(detail);
+    }
     finally { setBusy(false); }
   }
 
-  return <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+  return <Modal visible={visible} animationType="slide" transparent onRequestClose={close}>
     <View style={styles.backdrop}>
       <View style={styles.sheet}>
         <View style={styles.header}>
           <Text style={styles.heading}>Connect display</Text>
-          <Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={onClose}><Text style={styles.close}>Done</Text></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={close}><Text style={styles.close}>Done</Text></Pressable>
         </View>
         <ScrollView keyboardShouldPersistTaps="handled">
           <Text style={styles.caption}>Choose your Motif display. The pairing code appears on its screen.</Text>
           <Pressable accessibilityRole="button" onPress={search} disabled={busy} style={styles.action}><Text style={styles.actionText}>{devices.length ? 'Search again' : 'Find display'}</Text></Pressable>
-          {devices.map((device) => <Pressable key={device.id} accessibilityRole="button" onPress={() => setSelected(device)} style={[styles.device, selected?.id === device.id && styles.selected]}><Text style={styles.deviceText}>{device.name}</Text></Pressable>)}
-          {selected && <>
+          {devices.map((device) => <Pressable key={device.id} accessibilityRole="button" onPress={() => setSelected(device)} style={[styles.device, activeDevice?.id === device.id && styles.selected]}><Text style={styles.deviceText}>{device.name}</Text></Pressable>)}
+          {activeDevice && <>
             <Text style={styles.fieldLabel}>Wi-Fi network</Text>
             <TextInput value={ssid} onChangeText={setSsid} autoCapitalize="none" autoCorrect={false} placeholder="Network name" placeholderTextColor="#888" style={styles.input} accessibilityLabel="Wi-Fi network name" />
             <TextInput value={password} onChangeText={setPassword} secureTextEntry placeholder="Password" placeholderTextColor="#888" style={styles.input} accessibilityLabel="Wi-Fi password" />
             <Text style={styles.caption}>Leave Wi-Fi blank if the display is already connected.</Text>
-            <Pressable accessibilityRole="button" onPress={connect} disabled={busy} style={styles.action}><Text style={styles.actionText}>Pair and connect</Text></Pressable>
+            <Pressable accessibilityRole="button" onPress={connect} disabled={busy || waiting} style={styles.action}><Text style={styles.actionText}>{waiting ? 'Waiting for Wi-Fi…' : 'Pair and connect'}</Text></Pressable>
           </>}
-          {busy && <ActivityIndicator color="#F05850" style={{ marginTop: 18 }} />}
+          {(busy || waiting) && <ActivityIndicator color="#F05850" style={{ marginTop: 18 }} />}
           {!!message && <Text style={styles.message}>{message}</Text>}
         </ScrollView>
       </View>
