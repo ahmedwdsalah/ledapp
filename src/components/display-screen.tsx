@@ -1,16 +1,24 @@
 import * as Haptics from 'expo-haptics';
+import { BlurTargetView, BlurView } from 'expo-blur';
 import { Image } from 'expo-image';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useRef } from 'react';
-import { FlatList, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FlatList, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
+import { scheduleOnRN } from 'react-native-worklets';
 
 import { DisplayBadge } from '@/components/display-badge';
+import { ConnectDisplay } from '@/device/connect-display';
+import { savedDisplay, uploadAnimation } from '@/device/motif-device';
 import { galleryItems, type GalleryItem } from '@/constants/gallery-art';
 import { usePreviewSelection } from '@/context/preview-selection';
 import { useDynamicNotifications } from '@/hooks/use-dynamic-notifications';
 
+type HomeSection = 'My Library' | 'Individuals' | 'Packs';
+const sections: HomeSection[] = ['My Library', 'Individuals', 'Packs'];
 const INK = '#08090B';
 const CORAL = '#F05850';
 let didShowNotificationPreview = false;
@@ -20,14 +28,24 @@ export default function DisplayScreen() {
   const insets = useSafeAreaInsets();
   const { previewId, setPreviewId, selectedId, setSelectedId } = usePreviewSelection();
   const { trigger } = useDynamicNotifications();
-  const carousel = useRef<FlatList<GalleryItem>>(null);
-  const rail = useRef<FlatList<GalleryItem>>(null);
+  const list = useRef<FlatList<GalleryItem>>(null);
+  const blurTarget = useRef<View | null>(null);
   const currentId = useRef(previewId);
-  const pageWidth = Math.round(width * 0.82);
-  const badgeSize = Math.min(Math.round(width * 0.74), 344);
-  const stageHeight = badgeSize + 60;
+  const [section, setSection] = useState<HomeSection>('Packs');
+  const [connectOpen, setConnectOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const heroWidth = width - 32;
+  const heroSize = Math.min(heroWidth * 0.78, 320);
+  const heroHeight = heroWidth;
+  const cellWidth = (width - 64) / 3;
   const current = galleryItems[previewId];
-  const isChosen = selectedId === previewId;
+  const heroImageSize = current.framed ? heroSize * 1.42 : heroSize * 0.86;
+
+  const visibleItems = useMemo(() => {
+    if (section === 'My Library') return selectedId === null ? [] : [galleryItems[selectedId]];
+    if (section === 'Packs') return galleryItems.slice(0, 13);
+    return galleryItems;
+  }, [section, selectedId]);
 
   const notify = useCallback((item: GalleryItem, title: string) => {
     trigger({
@@ -56,157 +74,200 @@ export default function DisplayScreen() {
   }, [notify]);
 
   useEffect(() => {
-    if (currentId.current === previewId) return;
     currentId.current = previewId;
-    carousel.current?.scrollToIndex({ index: previewId, animated: false });
-    rail.current?.scrollToIndex({ index: previewId, animated: true, viewPosition: 0.5 });
   }, [previewId]);
 
-  function show(id: number) {
-    if (id === currentId.current) return;
+  const show = useCallback((id: number, scrollToTop = false) => {
+    if (id === currentId.current && !scrollToTop) return;
     currentId.current = id;
     setPreviewId(id);
-    carousel.current?.scrollToIndex({ index: id, animated: true });
-    rail.current?.scrollToIndex({ index: id, animated: true, viewPosition: 0.5 });
+    setSelectedId(id);
+    if (scrollToTop) list.current?.scrollToOffset({ offset: 0, animated: true });
+    Haptics.selectionAsync().catch(() => {});
+  }, [setPreviewId, setSelectedId]);
+
+  const step = useCallback((direction: number) => {
+    show((currentId.current + direction + galleryItems.length) % galleryItems.length);
+  }, [show]);
+
+  const swipeGesture = Gesture.Pan()
+    .activeOffsetX([-14, 14])
+    .failOffsetY([-18, 18])
+    .onEnd((event) => {
+      const direction = Math.abs(event.velocityX) > 420 ? event.velocityX : event.translationX;
+      if (Math.abs(event.translationX) > 42 || Math.abs(event.velocityX) > 420) {
+        scheduleOnRN(step, direction < 0 ? 1 : -1);
+      }
+    });
+
+  function changeSection(next: HomeSection) {
+    setSection(next);
+    list.current?.scrollToOffset({ offset: 0, animated: false });
     Haptics.selectionAsync().catch(() => {});
   }
 
-  function choose() {
-    if (isChosen) return;
-    setSelectedId(previewId);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    notify(current, 'Chosen for display');
+  async function uploadToDevice() {
+    if (uploading) return;
+    setUploading(true);
+    try {
+      if (!(await savedDisplay())) { setConnectOpen(true); return; }
+      await uploadAnimation(current.image);
+      setSelectedId(previewId);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      notify(current, 'Playing on display');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Upload failed';
+      notify(current, message);
+      if (/connect|Bluetooth|Peripheral|not found|offline/i.test(message)) setConnectOpen(true);
+    } finally { setUploading(false); }
   }
 
   return (
-    <ScrollView
+    <>
+    <FlatList
+      ref={list}
       style={styles.root}
-      contentContainerStyle={{ paddingTop: insets.top + 18, paddingBottom: insets.bottom + 100 }}
+      data={visibleItems}
+      keyExtractor={(item) => String(item.id)}
+      numColumns={3}
+      columnWrapperStyle={styles.row}
+      initialNumToRender={12}
+      maxToRenderPerBatch={9}
+      windowSize={5}
       contentInsetAdjustmentBehavior="never"
+      contentContainerStyle={{ paddingHorizontal: 24, paddingBottom: insets.bottom + 100 }}
       showsVerticalScrollIndicator={false}
-      onLayout={() => SplashScreen.hideAsync()}>
-      <StatusBar style="light" />
-      <View style={styles.header}>
-        <Pressable accessibilityRole="button" accessibilityLabel="Replay notification preview" onPress={() => notify(galleryItems[currentId.current], 'Preview ready')} style={styles.identity}>
-          <Image source={require('../../assets/images/motif-mark.png')} contentFit="contain" style={styles.mark} />
-          <Text style={styles.wordmark}>MOTIF</Text>
-        </Pressable>
-        <Text style={styles.counter}>{String(previewId + 1).padStart(2, '0')} <Text style={styles.counterMuted}>/ {galleryItems.length}</Text></Text>
-      </View>
-
-      <View style={styles.stage}>
-        <View pointerEvents="none" style={styles.paintPlane} />
-        <View pointerEvents="none" style={styles.paintSeam} />
-        <FlatList
-          ref={carousel}
-          data={galleryItems}
-          keyExtractor={(item) => String(item.id)}
-          horizontal
-          snapToInterval={pageWidth}
-          decelerationRate="fast"
-          bounces={false}
-          initialScrollIndex={previewId}
-          getItemLayout={(_, index) => ({ length: pageWidth, offset: pageWidth * index, index })}
-          contentContainerStyle={{ paddingHorizontal: (width - pageWidth) / 2 }}
-          initialNumToRender={3}
-          maxToRenderPerBatch={3}
-          windowSize={3}
-          showsHorizontalScrollIndicator={false}
-          accessibilityLabel="Swipe to preview animations"
-          onMomentumScrollEnd={(event) => {
-            const id = Math.max(0, Math.min(galleryItems.length - 1, Math.round(event.nativeEvent.contentOffset.x / pageWidth)));
-            if (id === currentId.current) return;
-            currentId.current = id;
-            setPreviewId(id);
-            rail.current?.scrollToIndex({ index: id, animated: true, viewPosition: 0.5 });
-            Haptics.selectionAsync().catch(() => {});
-          }}
-          renderItem={({ item }) => (
-            <View style={[styles.page, { width: pageWidth, height: stageHeight }]}>
-              <View style={[styles.deviceShadow, { width: badgeSize, height: badgeSize, borderRadius: badgeSize / 2 }]}>
-                <DisplayBadge item={item} size={badgeSize} />
+      onLayout={() => SplashScreen.hideAsync()}
+      ListHeaderComponent={
+        <View style={{ paddingTop: insets.top + 10 }}>
+          <StatusBar style="light" />
+          <View style={[styles.hero, { width: heroWidth, height: heroHeight, marginHorizontal: -8 }]}>
+            <BlurTargetView ref={blurTarget} style={StyleSheet.absoluteFill}>
+              <GestureDetector gesture={swipeGesture}>
+                <View
+                  style={styles.heroTouch}
+                  accessible
+                  accessibilityRole="adjustable"
+                  accessibilityLabel={`${current.name} animation preview`}
+                  accessibilityActions={[{ name: 'increment', label: 'Next animation' }, { name: 'decrement', label: 'Previous animation' }]}
+                  onAccessibilityAction={(event) => step(event.nativeEvent.actionName === 'increment' ? 1 : -1)}>
+                  <Animated.View key={previewId} entering={FadeIn.duration(170)} exiting={FadeOut.duration(170)} style={[styles.heroImage, { top: 0 }]}>
+                    <View style={{ width: heroSize, height: heroSize, borderRadius: heroSize / 2, overflow: 'hidden', backgroundColor: '#000' }}>
+                      <Image
+                        source={current.image}
+                        contentFit="contain"
+                        style={{ position: 'absolute', width: heroImageSize, height: heroImageSize, left: (heroSize - heroImageSize) / 2, top: (heroSize - heroImageSize) / 2 }}
+                      />
+                    </View>
+                  </Animated.View>
+                </View>
+              </GestureDetector>
+            </BlurTargetView>
+            <BlurView blurTarget={blurTarget} blurMethod="dimezisBlurViewSdk31Plus" tint="dark" intensity={30} style={styles.heroFooter}>
+              <View pointerEvents="none" style={styles.heroFooterFade} />
+              <View style={styles.heroCopy}>
+                <Text numberOfLines={1} style={styles.heroTitle}>{current.name}</Text>
+                <Text numberOfLines={1} style={styles.heroSubtitle}>{current.category}</Text>
               </View>
+              <Pressable accessibilityRole="button" accessibilityLabel={`Upload ${current.name} to display`} accessibilityHint="Long press to connect a different display" onPress={uploadToDevice} onLongPress={() => setConnectOpen(true)} disabled={uploading} style={({ pressed }) => [styles.uploadButton, pressed && styles.pressed]}>
+                <Text style={styles.uploadText}>{uploading ? 'Uploading…' : 'Upload to Device'}</Text>
+              </Pressable>
+            </BlurView>
+          </View>
+
+          <View style={styles.segment}>
+            {sections.map((option) => (
+              <Pressable
+                key={option}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: section === option }}
+                onPress={() => changeSection(option)}
+                style={[styles.segmentButton, section === option && styles.segmentSelected]}>
+                <Text style={[styles.segmentText, section === option && styles.segmentTextSelected]}>{option}</Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {section === 'Packs' && (
+            <View style={styles.features}>
+              <ReferenceBanner title="Sharingan" width={width - 32} cropTop={1664} cropHeight={336} onPress={() => show(1, true)} />
+              <ReferenceBanner title="Rorschach" width={width - 32} cropTop={2034} cropHeight={340} onPress={() => show(2, true)} />
             </View>
           )}
-          style={{ height: stageHeight }}
-        />
-      </View>
-
-      <View style={styles.details}>
-        <Text style={styles.eyebrow}>EMBLEM PREVIEW <Text style={styles.separator}>·</Text> {current.category.toUpperCase()}</Text>
-        <Text style={styles.title} numberOfLines={2}>{current.name}</Text>
-      </View>
-
-      <FlatList
-        ref={rail}
-        data={galleryItems}
-        keyExtractor={(item) => String(item.id)}
-        horizontal
-        initialScrollIndex={Math.max(0, previewId - 2)}
-        getItemLayout={(_, index) => ({ length: 68, offset: 68 * index, index })}
-        initialNumToRender={8}
-        maxToRenderPerBatch={8}
-        windowSize={5}
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.rail}
-        renderItem={({ item }) => (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Preview ${item.name}`}
-            accessibilityState={{ selected: item.id === previewId }}
-            onPress={() => show(item.id)}
-            style={styles.railTarget}>
-            <DisplayBadge item={item} size={item.id === previewId ? 56 : 48} style={item.id === previewId ? styles.railCurrent : styles.railOther} />
-            {item.id === selectedId && <View style={styles.railChosen} />}
-            {item.id === previewId && <View style={styles.railIndicator} />}
+        </View>
+      }
+      ListEmptyComponent={section === 'My Library' ? (
+        <View style={styles.empty}>
+          <Text style={styles.emptyText}>No animation selected yet</Text>
+          <Pressable accessibilityRole="button" onPress={() => changeSection('Individuals')} style={styles.emptyAction}>
+            <Text style={styles.emptyActionText}>Browse animations</Text>
           </Pressable>
-        )}
-      />
-
-      <View style={styles.actionArea}>
+        </View>
+      ) : null}
+      renderItem={({ item }) => (
         <Pressable
           accessibilityRole="button"
-          accessibilityState={{ selected: isChosen }}
-          onPress={choose}
-          style={({ pressed }) => [styles.action, isChosen && styles.actionChosen, pressed && !isChosen && styles.actionPressed]}>
-          <Text style={[styles.actionText, isChosen && styles.actionTextChosen]}>{isChosen ? 'Chosen for display' : 'Choose this animation'}</Text>
-          <Text style={[styles.actionIcon, isChosen && styles.actionTextChosen]}>{isChosen ? '✓' : '↗'}</Text>
+          accessibilityLabel={`Show ${item.name}`}
+          accessibilityState={{ selected: item.id === previewId }}
+          onPress={() => show(item.id, true)}
+          style={({ pressed }) => [styles.cell, { width: cellWidth, height: cellWidth }, item.id === previewId && styles.cellActive, pressed && styles.pressed]}>
+          <DisplayBadge item={item} size={cellWidth * 0.78} />
+          {item.id === selectedId && <View style={styles.selectedDot} />}
         </Pressable>
-      </View>
-    </ScrollView>
+      )}
+    />
+    <ConnectDisplay visible={connectOpen} onClose={() => setConnectOpen(false)} onConnected={() => { setConnectOpen(false); uploadToDevice(); }} />
+    </>
+  );
+}
+
+function ReferenceBanner({ title, width, cropTop, cropHeight, onPress }: {
+  title: string;
+  width: number;
+  cropTop: number;
+  cropHeight: number;
+  onPress: () => void;
+}) {
+  const scale = width / 1194;
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={title} onPress={onPress} style={[styles.referenceBanner, { width, height: cropHeight * scale }]}>
+      <Image
+        source={require('../../assets/images/home-reference.png')}
+        contentFit="fill"
+        style={{ position: 'absolute', width: 1290 * scale, height: 2796 * scale, left: -48 * scale, top: -cropTop * scale }}
+      />
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: INK },
-  header: { paddingHorizontal: 25, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  identity: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  mark: { width: 25, height: 25 },
-  wordmark: { color: '#F7F5F1', fontSize: 15, fontWeight: '800', letterSpacing: 3.4 },
-  counter: { color: '#F2F0EC', fontSize: 14, fontWeight: '700', fontVariant: ['tabular-nums'] },
-  counterMuted: { color: '#77777B', fontWeight: '500' },
-  stage: { marginTop: 16, justifyContent: 'center', overflow: 'hidden' },
-  paintPlane: { position: 'absolute', left: 0, right: 0, top: '28%', bottom: '21%', backgroundColor: '#15171B', experimental_backgroundImage: 'linear-gradient(180deg, #22242A 0%, #101114 18%, #0A0B0E 68%, #201112 100%)' },
-  paintSeam: { position: 'absolute', left: 0, right: 0, top: '28%', height: 1, backgroundColor: 'rgba(255,255,255,0.09)' },
-  page: { alignItems: 'center', justifyContent: 'center' },
-  deviceShadow: { backgroundColor: '#000', boxShadow: '0 20px 48px rgba(0,0,0,0.75)' },
-  details: { paddingHorizontal: 26, alignItems: 'center', marginTop: 5, minHeight: 70 },
-  eyebrow: { color: CORAL, fontSize: 10, fontWeight: '800', letterSpacing: 1.8 },
-  separator: { color: '#65656A' },
-  title: { color: '#F6F4F0', fontSize: 31, lineHeight: 39, fontWeight: '700', letterSpacing: -1.2, textAlign: 'center', marginTop: 7 },
-  rail: { paddingHorizontal: 18, paddingTop: 5, paddingBottom: 7 },
-  railTarget: { width: 68, height: 64, alignItems: 'center', justifyContent: 'center' },
-  railCurrent: { borderWidth: 2, borderColor: '#F2F0EC' },
-  railOther: { opacity: 0.66 },
-  railChosen: { position: 'absolute', top: 7, right: 6, width: 9, height: 9, borderRadius: 5, backgroundColor: CORAL, borderWidth: 1, borderColor: INK },
-  railIndicator: { position: 'absolute', bottom: 0, width: 11, height: 2, borderRadius: 1, backgroundColor: CORAL },
-  actionArea: { paddingHorizontal: 25, paddingTop: 13 },
-  action: { minHeight: 58, paddingHorizontal: 21, borderRadius: 18, backgroundColor: '#F2F0EC', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  actionChosen: { backgroundColor: '#281617', borderWidth: 1, borderColor: CORAL },
-  actionPressed: { opacity: 0.84, transform: [{ scale: 0.985 }] },
-  actionText: { color: '#111214', fontSize: 16, fontWeight: '700' },
-  actionTextChosen: { color: '#F4EAE8' },
-  actionIcon: { color: '#111214', fontSize: 23, fontWeight: '500' },
+  hero: { backgroundColor: '#000', overflow: 'hidden', borderRadius: 22, borderWidth: 1, borderColor: '#242426' },
+  heroTouch: { flex: 1 },
+  heroImage: { position: 'absolute', left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
+  heroFooter: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 62, flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 22, paddingBottom: 10, backgroundColor: 'rgba(0,0,0,0.24)', overflow: 'hidden' },
+  heroFooterFade: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, experimental_backgroundImage: 'linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.52) 52%, rgba(0,0,0,0.9) 100%)' },
+  heroCopy: { flex: 1, paddingRight: 12 },
+  heroTitle: { color: '#FFFFFF', fontSize: 14, fontWeight: '700', letterSpacing: -0.2 },
+  heroSubtitle: { color: '#ACACB1', fontSize: 12, fontWeight: '600', marginTop: 3 },
+  uploadButton: { minHeight: 30, borderRadius: 7, paddingHorizontal: 9, backgroundColor: '#333336', borderWidth: 1, borderColor: '#5B5B60', justifyContent: 'center' },
+  uploadText: { color: '#EFEFF0', fontSize: 11, fontWeight: '700' },
+  segment: { height: 32, borderRadius: 12, backgroundColor: '#19191B', flexDirection: 'row', padding: 2, marginHorizontal: -8, marginTop: 10, marginBottom: 12 },
+  segmentButton: { flex: 1, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  segmentSelected: { backgroundColor: '#39393C' },
+  segmentText: { color: '#A9A9AE', fontSize: 13, fontWeight: '600' },
+  segmentTextSelected: { color: '#F7F7F7' },
+  features: { gap: 10, marginHorizontal: -8, marginBottom: 16 },
+  referenceBanner: { borderRadius: 18, overflow: 'hidden', backgroundColor: '#151517' },
+  row: { gap: 8, marginBottom: 8 },
+  cell: { borderRadius: 20, backgroundColor: '#111113', borderWidth: 1, borderColor: '#252528', alignItems: 'center', justifyContent: 'center' },
+  cellActive: { borderColor: '#F05850' },
+  selectedDot: { position: 'absolute', top: 10, right: 10, width: 7, height: 7, borderRadius: 4, backgroundColor: CORAL },
+  pressed: { opacity: 0.78 },
+  empty: { alignItems: 'center', paddingVertical: 52, gap: 8 },
+  emptyText: { color: '#AAA9AE', fontSize: 14 },
+  emptyAction: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 12 },
+  emptyActionText: { color: CORAL, fontSize: 14, fontWeight: '700' },
   notificationBody: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingLeft: 13, paddingRight: 20, gap: 12 },
   notificationCopy: { flex: 1 },
   notificationTitle: { color: CORAL, fontSize: 17, fontWeight: '700', letterSpacing: -0.35 },

@@ -41,3 +41,13 @@ example
 # generated native folders
 /ios
 /android
+
+# Local board recovery and vendor archives
+/hardware/backups/
+/hardware/vendor/*.zip
+/hardware/toolchains/
+/hardware/firmware/build/
+/hardware/firmware/managed_components/
+/hardware/firmware/*.log
+/hardware/firmware/sdkconfig.pre-*
+/hardware/firmware/sdkconfig.vendor-generated

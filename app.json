@@ -10,7 +10,12 @@
     "ios": {
       "icon": "./assets/images/motif-icon.png",
       "infoPlist": {
-        "CADisableMinimumFrameDurationOnPhone": true
+        "CADisableMinimumFrameDurationOnPhone": true,
+        "NSLocalNetworkUsageDescription": "Connect to your Motif display to upload animations.",
+        "NSBluetoothAlwaysUsageDescription": "Find and pair with your Motif display.",
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
       }
     },
     "android": {
@@ -32,7 +37,11 @@
         {
           "backgroundColor": "#050507"
         }
-      ]
+      ],
+      "expo-asset",
+      "expo-secure-store",
+      "react-native-ble-manager",
+      "./plugins/with-motif-network"
     ],
     "experiments": {
       "typedRoutes": true,
