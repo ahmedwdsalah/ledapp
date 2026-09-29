@@ -14,7 +14,7 @@ import { DisplayBadge } from '@/components/display-badge';
 import { ConnectDisplay } from '@/device/connect-display';
 import { savedDisplay, uploadAnimation } from '@/device/motif-device';
 import { recordConnection } from '@/device/connection-log';
-import { badgeLoadingAnimation, curiousRaccoonAnimation, emeraldRadarAnimation, loadingAnimation, prismVortexAnimation, toyotaAnimation, violetIrisAnimation, type GalleryItem } from '@/constants/gallery-art';
+import { badgeLoadingAnimation, bmwAnimation, curiousRaccoonAnimation, emeraldRadarAnimation, loadingAnimation, prismVortexAnimation, toyotaAnimation, violetIrisAnimation, type GalleryItem } from '@/constants/gallery-art';
 import { usePreviewSelection } from '@/context/preview-selection';
 import { useDynamicNotifications } from '@/hooks/use-dynamic-notifications';
 
@@ -22,7 +22,7 @@ type HomeSection = 'My Library' | 'Individuals' | 'Packs';
 const sections: HomeSection[] = ['My Library', 'Individuals', 'Packs'];
 const INK = '#08090B';
 const CORAL = '#F05850';
-const displayItems = [toyotaAnimation, loadingAnimation, badgeLoadingAnimation, prismVortexAnimation, emeraldRadarAnimation, violetIrisAnimation, curiousRaccoonAnimation];
+const displayItems = [toyotaAnimation, loadingAnimation, badgeLoadingAnimation, prismVortexAnimation, emeraldRadarAnimation, violetIrisAnimation, curiousRaccoonAnimation, bmwAnimation];
 let didShowNotificationPreview = false;
 
 export default function DisplayScreen() {

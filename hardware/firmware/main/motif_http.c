@@ -15,6 +15,7 @@
 #include "motif_diagnostics.h"
 
 static httpd_handle_t s_server;
+static httpd_handle_t s_progress_server;
 static const char *TAG = "motif_http";
 
 static bool authorized(httpd_req_t *req)
@@ -35,17 +36,29 @@ static esp_err_t deny(httpd_req_t *req)
     return httpd_resp_sendstr(req, "Unauthorized");
 }
 
+static volatile int s_upload_received;
+static volatile int s_upload_total;
+
 static esp_err_t status_handler(httpd_req_t *req)
 {
     if (!authorized(req)) return deny(req);
     uint32_t generation;
     motif_player_state_t state;
     motif_player_status(&generation, &state);
-    char id[7], body[160];
+    char id[7], body[192];
     motif_state_device_id(id);
     const char *states[] = {"idle", "applying", "playing", "error"};
-    snprintf(body, sizeof(body), "{\"protocol\":1,\"deviceId\":\"%s\",\"wifiConnected\":true,\"generation\":%lu,\"state\":\"%s\"}",
-             id, (unsigned long)generation, states[state]);
+    snprintf(body, sizeof(body), "{\"protocol\":1,\"deviceId\":\"%s\",\"wifiConnected\":true,\"generation\":%lu,\"state\":\"%s\",\"uploadBytes\":%d,\"uploadTotal\":%d}",
+             id, (unsigned long)generation, states[state], s_upload_received, s_upload_total);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, body);
+}
+
+static esp_err_t progress_handler(httpd_req_t *req)
+{
+    if (!authorized(req)) return deny(req);
+    char body[64];
+    snprintf(body, sizeof(body), "{\"uploadBytes\":%d,\"uploadTotal\":%d}", s_upload_received, s_upload_total);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, body);
 }
@@ -123,6 +136,8 @@ static esp_err_t upload_handler(httpd_req_t *req)
     uint8_t buffer[4096], header[12] = {0};
     int remaining = req->content_len;
     int received_total = 0;
+    s_upload_total = req->content_len;
+    s_upload_received = 0;
     int next_progress = 64 * 1024;
     bool valid = true;
     const char *failure = NULL;
@@ -147,16 +162,19 @@ static esp_err_t upload_handler(httpd_req_t *req)
             break;
         }
         received_total += received;
+        s_upload_received = received_total;
         remaining -= received;
+        motif_player_set_receive_progress((uint8_t)((uint64_t)received_total * 100u / (uint32_t)req->content_len));
         if (received_total >= next_progress) {
             motif_diag_record("upload_received", received_total);
-            motif_player_set_receive_progress((uint8_t)((uint64_t)received_total * 100u / (uint32_t)req->content_len));
             ESP_LOGI(TAG, "Upload received %d/%d", received_total, req->content_len);
             next_progress += 64 * 1024;
         }
     }
     if (fclose(out) != 0) { valid = false; failure = "Display storage close failed"; }
     motif_player_set_receiving(false);
+    s_upload_received = 0;
+    s_upload_total = 0;
     if (valid && remaining != 0) failure = "Upload ended before all bytes arrived";
     else if (valid) failure = motif_player_header_problem(header, req->content_len);
     valid = valid && failure == NULL;
@@ -260,11 +278,30 @@ esp_err_t motif_http_start(void)
     if (err == ESP_OK) err = httpd_register_uri_handler(s_server, &color_test);
     if (err == ESP_OK) err = httpd_register_uri_handler(s_server, &upload);
     if (err == ESP_OK) err = httpd_register_uri_handler(s_server, &firmware);
-    if (err != ESP_OK) motif_http_stop();
-    return err;
+    if (err != ESP_OK) {
+        motif_http_stop();
+        return err;
+    }
+    httpd_config_t progress_config = HTTPD_DEFAULT_CONFIG();
+    progress_config.server_port = 8081;
+    progress_config.ctrl_port = 32769;
+    progress_config.max_open_sockets = 2;
+    progress_config.stack_size = 4096;
+    progress_config.lru_purge_enable = true;
+    if (httpd_start(&s_progress_server, &progress_config) != ESP_OK) {
+        ESP_LOGW(TAG, "Progress server failed to start");
+        s_progress_server = NULL;
+        return ESP_OK;
+    }
+    httpd_uri_t progress = {.uri = "/v1/progress", .method = HTTP_GET, .handler = progress_handler};
+    if (httpd_register_uri_handler(s_progress_server, &progress) != ESP_OK) {
+        ESP_LOGW(TAG, "Progress endpoint registration failed");
+    }
+    return ESP_OK;
 }
 
 void motif_http_stop(void)
 {
+    if (s_progress_server) { httpd_stop(s_progress_server); s_progress_server = NULL; }
     if (s_server) { httpd_stop(s_server); s_server = NULL; }
 }

@@ -73,6 +73,7 @@ export const galleryItems = [
   { id: 70, name: 'Emerald Radar', category: 'Motion', framed: true, image: require('../../assets/device-animations/emerald-radar.webp'), deviceData: require('../../assets/device-animations/emerald-radar.motif') },
   { id: 71, name: 'Violet Iris', category: 'Motion', framed: true, image: require('../../assets/device-animations/violet-iris-real.webp'), deviceData: require('../../assets/device-animations/violet-iris-real.motif') },
   { id: 72, name: 'Curious Raccoon', category: 'Characters', framed: true, image: require('../../assets/device-animations/curious-raccoon.webp'), deviceData: require('../../assets/device-animations/curious-raccoon.motif') },
+  { id: 73, name: 'BMW Roundel', category: 'Emblems', framed: true, image: require('../../assets/device-animations/bmw-roundel.webp'), deviceData: require('../../assets/device-animations/bmw-roundel.motif') },
 ] as const;
 
 export type GalleryItem = (typeof galleryItems)[number];
@@ -86,3 +87,4 @@ export const prismVortexAnimation = galleryItems[69];
 export const emeraldRadarAnimation = galleryItems[70];
 export const violetIrisAnimation = galleryItems[71];
 export const curiousRaccoonAnimation = galleryItems[72];
+export const bmwAnimation = galleryItems[73];

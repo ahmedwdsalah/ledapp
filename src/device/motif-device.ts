@@ -279,6 +279,7 @@ async function sendWithRetry(file: File, url: string, token: string, onProgress?
 export async function uploadAnimation(assetModule: number, onProgress?: (percent: number) => void): Promise<void> {
   if (uploadInProgress) throw new Error('An upload is already running.');
   uploadInProgress = true;
+  let syncTimer: ReturnType<typeof setInterval> | undefined;
   try {
     recordConnection('Upload', 'Checking paired display');
     const saved = await savedDisplay();
@@ -291,8 +292,12 @@ export async function uploadAnimation(assetModule: number, onProgress?: (percent
     if (file.size > 4 * 1024 * 1024) throw new Error('Animation is too large for this display.');
     recordConnection('Upload', `Loaded ${file.size} animation bytes`);
     let sentBucket = -1;
+    let lastDevicePercent = 0;
+    let pollInFlight = false;
     const progress = (percent: number) => {
       onProgress?.(percent);
+    };
+    const nativeProgress = (percent: number) => {
       const bucket = Math.min(10, Math.floor(percent * 10));
       if (bucket > sentBucket) {
         sentBucket = bucket;
@@ -301,8 +306,28 @@ export async function uploadAnimation(assetModule: number, onProgress?: (percent
     };
     const base = `http://${display.ip}:8080`;
     const headers = { Authorization: `Bearer ${saved.token}` };
+    syncTimer = setInterval(async () => {
+      if (pollInFlight) return;
+      pollInFlight = true;
+      try {
+        const response = await fetchWithDeadline(`http://${display.ip}:8081/v1/progress`, { headers }, 2000);
+        if (!response.ok) return;
+        const status = await response.json() as { uploadBytes?: number; uploadTotal?: number };
+        if (typeof status.uploadBytes !== 'number' || typeof status.uploadTotal !== 'number') return;
+        if (status.uploadTotal <= 0 || status.uploadBytes > status.uploadTotal) return;
+        const percent = Math.floor((status.uploadBytes * 100) / status.uploadTotal) / 100;
+        if (percent > lastDevicePercent || lastDevicePercent - percent > 0.2) {
+          lastDevicePercent = percent;
+          progress(percent);
+        }
+      } catch {
+        // Device polls are best-effort; the upload result itself is authoritative.
+      } finally {
+        pollInFlight = false;
+      }
+    }, 250);
     recordConnection('Upload', `Sending to ${display.ip}:8080`);
-    const result = await sendWithRetry(file, `${base}/v1/animation`, saved.token, progress);
+    const result = await sendWithRetry(file, `${base}/v1/animation`, saved.token, nativeProgress);
     recordConnection('Upload', `Board response HTTP ${result.status}`);
     if (result.status !== 202) {
       const reason = result.body.trim();
@@ -340,6 +365,8 @@ export async function uploadAnimation(assetModule: number, onProgress?: (percent
     }
     throw new Error('The upload finished, but playback was not confirmed.');
   } finally {
+    if (syncTimer) clearInterval(syncTimer);
     uploadInProgress = false;
   }
 }
+
