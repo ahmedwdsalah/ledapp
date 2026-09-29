@@ -1,6 +1,7 @@
 #include "motif_player.h"
 
 #include <stdio.h>
+#include <errno.h>
 #include <string.h>
 #include <unistd.h>
 #include "esp_heap_caps.h"
@@ -17,13 +18,13 @@
 #define DISPLAY_WIDTH 480
 #define DISPLAY_HEIGHT 480
 #define DISPLAY_FRAME_BYTES (DISPLAY_WIDTH * DISPLAY_HEIGHT * 2)
+#define MAX_COMPRESSED_FRAME_BYTES (DISPLAY_FRAME_BYTES + 1024)
 
 static const char *TAG = "motif_player";
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
-static uint8_t *s_animation;
-static size_t s_animation_length;
+static FILE *s_animation;
+static uint8_t *s_compressed_frame;
 static uint16_t *s_display_frame;
-static const uint8_t *s_frame_cursor;
 static uint16_t s_frame_count;
 static uint16_t s_frame_index;
 static uint32_t s_frame_due;
@@ -60,22 +61,37 @@ esp_err_t motif_player_mount(void)
     return err;
 }
 
-static bool valid_animation(const uint8_t *data, size_t length, uint16_t *frame_count)
+static bool read_frame(FILE *file, uint16_t *duration)
 {
-    if (length < 18 || memcmp(data, "MOTF", 4) != 0 || data[4] != 1 || data[5] != 0 ||
-        read16(data + 6) != DISPLAY_WIDTH || read16(data + 8) != DISPLAY_HEIGHT) return false;
-    uint16_t count = read16(data + 10);
+    uint8_t header[6];
+    if (fread(header, 1, sizeof(header), file) != sizeof(header)) return false;
+    *duration = read16(header);
+    uint32_t compressed = read32(header + 2);
+    if (*duration < 20 || *duration > 1000 || compressed < 6 || compressed > MAX_COMPRESSED_FRAME_BYTES ||
+        fread(s_compressed_frame, 1, compressed, file) != compressed) return false;
+    size_t decoded = tinfl_decompress_mem_to_mem(s_display_frame, DISPLAY_FRAME_BYTES,
+        s_compressed_frame, compressed, TINFL_FLAG_PARSE_ZLIB_HEADER);
+    return decoded == DISPLAY_FRAME_BYTES;
+}
+
+static bool valid_animation(FILE *file, long length, uint16_t *frame_count)
+{
+    uint8_t header[12];
+    if (length < 18 || length > MOTIF_MAX_ANIMATION_BYTES || fseek(file, 0, SEEK_SET) != 0 ||
+        fread(header, 1, sizeof(header), file) != sizeof(header) ||
+        memcmp(header, "MOTF", 4) != 0 || header[4] != 1 || header[5] != 0 ||
+        read16(header + 6) != DISPLAY_WIDTH || read16(header + 8) != DISPLAY_HEIGHT) return false;
+    uint16_t count = read16(header + 10), duration;
     if (!count || count > 255) return false;
-    size_t offset = 12;
     for (uint16_t i = 0; i < count; ++i) {
-        if (length - offset < 6) return false;
-        uint16_t duration = read16(data + offset);
-        uint32_t compressed = read32(data + offset + 2);
-        offset += 6;
-        if (duration < 20 || duration > 1000 || compressed < 6 || compressed > length - offset) return false;
-        offset += compressed;
+        if (!read_frame(file, &duration)) {
+            motif_diag_record("frame_invalid", i);
+            return false;
+        }
+        // Validation must not monopolize the main task during a long animation.
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
-    if (offset != length) return false;
+    if (ftell(file) != length || fseek(file, 12, SEEK_SET) != 0) return false;
     *frame_count = count;
     return true;
 }
@@ -85,26 +101,16 @@ static bool draw_next_frame(void)
     uint32_t started = esp_log_timestamp();
     uint32_t frame_started = lv_tick_get();
     if (s_frame_index == s_frame_count) {
+        if (fseek(s_animation, 12, SEEK_SET) != 0) return false;
         s_frame_index = 0;
-        s_frame_cursor = s_animation + 12;
     }
-    size_t offset = s_frame_cursor - s_animation;
-    if (offset > s_animation_length || s_animation_length - offset < 6) return false;
-    uint16_t duration = read16(s_frame_cursor);
-    uint32_t compressed = read32(s_frame_cursor + 2);
-    if (compressed > s_animation_length - offset - 6) return false;
-    const uint8_t *payload = s_frame_cursor + 6;
-    size_t decoded = tinfl_decompress_mem_to_mem(s_display_frame, DISPLAY_FRAME_BYTES, payload,
-                                                  compressed, TINFL_FLAG_PARSE_ZLIB_HEADER);
-    if (decoded != DISPLAY_FRAME_BYTES) {
+    uint16_t duration;
+    if (!read_frame(s_animation, &duration)) {
         motif_diag_record("frame_decode_failed", s_frame_index);
-        ESP_LOGE(TAG, "Frame %u decode=%lu compressed=%lu header=%02x%02x", s_frame_index,
-                 (unsigned long)decoded, (unsigned long)compressed, payload[0], payload[1]);
         return false;
     }
     if (esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT,
                                   s_display_frame) != ESP_OK) return false;
-    s_frame_cursor = payload + compressed;
     s_frame_index++;
     s_frame_due = frame_started + duration;
     uint32_t elapsed = esp_log_timestamp() - started;
@@ -124,55 +130,66 @@ static bool draw_next_frame(void)
 
 static bool play_current(void)
 {
-    FILE *file = fopen(MOTIF_ANIMATION_PATH, "rb");
-    if (!file) return false;
-    if (fseek(file, 0, SEEK_END) != 0) { fclose(file); return false; }
-    long length = ftell(file);
-    if (length < 18 || length > MOTIF_MAX_ANIMATION_BYTES || fseek(file, 0, SEEK_SET) != 0) {
-        fclose(file);
-        return false;
-    }
-    uint8_t *incoming = heap_caps_malloc(length, MALLOC_CAP_SPIRAM);
-    if (!incoming) { fclose(file); ESP_LOGE(TAG, "Not enough PSRAM for animation"); return false; }
-    bool complete = fread(incoming, 1, length, file) == length;
-    fclose(file);
-    uint16_t frame_count = 0;
-    if (!complete || !valid_animation(incoming, length, &frame_count)) {
-        heap_caps_free(incoming);
-        ESP_LOGE(TAG, "Invalid animation file");
-        return false;
-    }
+    FILE *incoming = fopen(MOTIF_ANIMATION_PATH, "rb");
+    if (!incoming) return false;
+    if (fseek(incoming, 0, SEEK_END) != 0) { fclose(incoming); return false; }
+    long length = ftell(incoming);
+    // Fixed buffers: total animation length never determines a RAM allocation.
+    if (!s_compressed_frame) s_compressed_frame = heap_caps_malloc(MAX_COMPRESSED_FRAME_BYTES, MALLOC_CAP_SPIRAM);
     if (!s_display_frame) s_display_frame = heap_caps_malloc(DISPLAY_FRAME_BYTES, MALLOC_CAP_SPIRAM);
-    if (!s_display_frame) {
-        heap_caps_free(incoming);
+    if (!s_compressed_frame || !s_display_frame) {
+        fclose(incoming);
+        motif_diag_record("frame_buffer_alloc_failed", DISPLAY_FRAME_BYTES);
         ESP_LOGE(TAG, "Not enough PSRAM for frame buffers");
         return false;
     }
-    uint8_t *previous = s_animation;
-    size_t previous_length = s_animation_length;
-    const uint8_t *previous_cursor = s_frame_cursor;
+    uint16_t count;
+    if (!valid_animation(incoming, length, &count)) {
+        fclose(incoming);
+        motif_diag_record("animation_invalid", length);
+        return false;
+    }
+    FILE *previous = s_animation;
     uint16_t previous_count = s_frame_count, previous_index = s_frame_index;
     s_animation = incoming;
-    s_animation_length = length;
-    s_frame_cursor = incoming + 12;
-    s_frame_count = frame_count;
+    s_frame_count = count;
     s_frame_index = 0;
     if (!draw_next_frame()) {
         s_animation = previous;
-        s_animation_length = previous_length;
-        s_frame_cursor = previous_cursor;
         s_frame_count = previous_count;
         s_frame_index = previous_index;
-        heap_caps_free(incoming);
-        ESP_LOGE(TAG, "Could not decompress first frame");
+        fclose(incoming);
         return false;
     }
-    if (previous) heap_caps_free(previous);
+    if (previous) fclose(previous);
     if (s_message) lv_obj_add_flag(s_message, LV_OBJ_FLAG_HIDDEN);
     if (s_detail) lv_obj_add_flag(s_detail, LV_OBJ_FLAG_HIDDEN);
     if (s_ring) lv_obj_add_flag(s_ring, LV_OBJ_FLAG_HIDDEN);
-    ESP_LOGI(TAG, "Playing %u frames from PSRAM (%ld bytes)", frame_count, length);
-    motif_diag_record("playback_started", frame_count);
+    ESP_LOGI(TAG, "Streaming %u frames from flash (%ld bytes), buffers=%u bytes", count, length,
+             DISPLAY_FRAME_BYTES + MAX_COMPRESSED_FRAME_BYTES);
+    motif_diag_record("playback_started", count);
+    return true;
+}
+
+static bool apply_animation(void)
+{
+    bool had_previous = access(MOTIF_ANIMATION_PATH, F_OK) == 0;
+    if (had_previous) {
+        if (unlink(MOTIF_ANIMATION_BACKUP_PATH) != 0 && errno != ENOENT) return false;
+        if (rename(MOTIF_ANIMATION_PATH, MOTIF_ANIMATION_BACKUP_PATH) != 0) return false;
+    }
+    if (rename(MOTIF_ANIMATION_PART_PATH, MOTIF_ANIMATION_PATH) != 0) {
+        if (had_previous) rename(MOTIF_ANIMATION_BACKUP_PATH, MOTIF_ANIMATION_PATH);
+        return false;
+    }
+    if (!play_current()) {
+        unlink(MOTIF_ANIMATION_PATH);
+        if (had_previous && rename(MOTIF_ANIMATION_BACKUP_PATH, MOTIF_ANIMATION_PATH) != 0)
+            ESP_LOGE(TAG, "Could not restore previous animation path");
+        // The previous open file and its playback position remain valid on failure.
+        return false;
+    }
+    if (had_previous) unlink(MOTIF_ANIMATION_BACKUP_PATH);
     return true;
 }
 
@@ -201,11 +218,14 @@ void motif_player_init_ui(void)
     }
     unlink(MOTIF_ANIMATION_PART_PATH);
     if (play_current()) s_state = MOTIF_PLAYER_PLAYING;
-    else if (access(MOTIF_ANIMATION_PATH, F_OK) == 0) {
-        // Retire the previous 240px format. Show pairing UI until a native upload arrives.
-        unlink(MOTIF_ANIMATION_PATH);
-        s_state = MOTIF_PLAYER_IDLE;
-    }
+    else if (access(MOTIF_ANIMATION_BACKUP_PATH, F_OK) == 0) {
+        // Preserve the failed candidate until the known previous file is restored.
+        if (rename(MOTIF_ANIMATION_PATH, MOTIF_ANIMATION_PART_PATH) == 0 || errno == ENOENT) {
+            if (rename(MOTIF_ANIMATION_BACKUP_PATH, MOTIF_ANIMATION_PATH) == 0 && play_current())
+                s_state = MOTIF_PLAYER_PLAYING;
+            else s_state = MOTIF_PLAYER_ERROR;
+        }
+    } else if (access(MOTIF_ANIMATION_PATH, F_OK) == 0) s_state = MOTIF_PLAYER_ERROR;
     s_status_dirty = true;
 }
 
@@ -337,17 +357,7 @@ void motif_player_loop(void)
     }
 
     if (pending) {
-        bool had_previous = access(MOTIF_ANIMATION_PATH, F_OK) == 0;
-        if (had_previous) {
-            unlink(MOTIF_ANIMATION_BACKUP_PATH);
-            if (rename(MOTIF_ANIMATION_PATH, MOTIF_ANIMATION_BACKUP_PATH) != 0) had_previous = false;
-        }
-        bool applied = rename(MOTIF_ANIMATION_PART_PATH, MOTIF_ANIMATION_PATH) == 0 && play_current();
-        if (!applied && had_previous) {
-            unlink(MOTIF_ANIMATION_PATH);
-            rename(MOTIF_ANIMATION_BACKUP_PATH, MOTIF_ANIMATION_PATH);
-        }
-        if (applied) unlink(MOTIF_ANIMATION_BACKUP_PATH);
+        bool applied = apply_animation();
         portENTER_CRITICAL(&s_mux);
         s_generation = pending;
         s_pending_generation = 0;
@@ -361,7 +371,7 @@ void motif_player_loop(void)
         (int32_t)(lv_tick_get() - s_frame_due) >= 0) {
         if (!draw_next_frame()) {
             ESP_LOGE(TAG, "Frame decompression failed");
-            heap_caps_free(s_animation);
+            fclose(s_animation);
             s_animation = NULL;
             portENTER_CRITICAL(&s_mux);
             s_state = MOTIF_PLAYER_ERROR;

@@ -67,12 +67,13 @@ void LVGL_Init(void)
     lv_disp_draw_buf_init(&disp_buf, buf1, buf2, EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES);
 #else
     ESP_LOGI(LVGL_TAG, "Allocate separate LVGL draw buffers from PSRAM");
-    buf1 = heap_caps_malloc(EXAMPLE_LCD_H_RES  * EXAMPLE_LCD_V_RES, MALLOC_CAP_SPIRAM);
+    const size_t buffer_pixels = EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES / 2;
+    buf1 = heap_caps_malloc(buffer_pixels * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
     assert(buf1);
-    buf2 = heap_caps_malloc(EXAMPLE_LCD_H_RES  * EXAMPLE_LCD_V_RES, MALLOC_CAP_SPIRAM);
+    buf2 = heap_caps_malloc(buffer_pixels * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
     assert(buf2);
     // initialize LVGL draw buffers
-    lv_disp_draw_buf_init(&disp_buf, buf1, buf2, EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES);
+    lv_disp_draw_buf_init(&disp_buf, buf1, buf2, buffer_pixels);
 #endif // CONFIG_EXAMPLE_DOUBLE_FB
 
     ESP_LOGI(LVGL_TAG, "Register display driver to LVGL");

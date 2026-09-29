@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Pack the gallery's clean GIF previews into display-ready RGB565 frame streams."""
 from pathlib import Path
+from animation_output import publish_assets
 import struct
 import subprocess
 import zlib
@@ -29,6 +30,7 @@ for source in sorted(SOURCE.glob('*.gif')):
         output.extend(compressed)
     if len(output) > MAX_BYTES:
         raise ValueError(f'{source.name}: {len(output)} bytes exceeds the display limit')
-    (OUTPUT / f'{source.stem}.motif').write_bytes(output)
+    with publish_assets(OUTPUT) as staging:
+        (staging / f'{source.stem}.motif').write_bytes(output)
 
 print(f'Packed {len(list(OUTPUT.glob("*.motif")))} animations')

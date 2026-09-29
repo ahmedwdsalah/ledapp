@@ -2,6 +2,7 @@
 """Pack Toyota Ember's lossless 480px masters for current Motif transport."""
 
 from pathlib import Path
+from animation_output import publish_assets
 import struct
 import zlib
 
@@ -33,5 +34,6 @@ for index, path in enumerate(frames):
 
 if len(output) > MAX_BYTES:
     raise ValueError(f"Toyota animation is {len(output)} bytes; limit is {MAX_BYTES}")
-TARGET.write_bytes(output)
+with publish_assets(TARGET.parent) as staging:
+    (staging / TARGET.name).write_bytes(output)
 print(f"Packed {len(frames)} native 480×480 frames in {len(output)} bytes")

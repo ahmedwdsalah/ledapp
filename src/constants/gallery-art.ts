@@ -67,6 +67,12 @@ export const galleryItems = [
   { id: 64, name: 'Warning', category: 'Symbols', framed: false, image: require('../../assets/device-gifs/noto-warning.gif'), deviceData: require('../../assets/device-animations/noto-warning.motif') },
   { id: 65, name: 'Zany Face', category: 'Characters', framed: false, image: require('../../assets/device-gifs/noto-zany-face.gif'), deviceData: require('../../assets/device-animations/noto-zany-face.motif') },
   { id: 66, name: 'Toyota Ember', category: 'Emblems', framed: true, image: require('../../assets/animation-masters/toyota-ember/toyota-ember.webp'), deviceData: require('../../assets/device-animations/toyota-ember.motif') },
+  { id: 67, name: 'Loading', category: 'Motion', framed: true, image: require('../../assets/device-animations/motif-loading-preview.png'), deviceData: require('../../assets/device-animations/motif-loading.motif') },
+  { id: 68, name: 'Badge Loading', category: 'Motion', framed: true, image: require('../../assets/device-animations/badge-loading.webp'), deviceData: require('../../assets/device-animations/badge-loading.motif') },
+  { id: 69, name: 'Prism Vortex', category: 'Motion', framed: true, image: require('../../assets/device-animations/prism-vortex.webp'), deviceData: require('../../assets/device-animations/prism-vortex.motif') },
+  { id: 70, name: 'Emerald Radar', category: 'Motion', framed: true, image: require('../../assets/device-animations/emerald-radar.webp'), deviceData: require('../../assets/device-animations/emerald-radar.motif') },
+  { id: 71, name: 'Violet Iris', category: 'Motion', framed: true, image: require('../../assets/device-animations/violet-iris-real.webp'), deviceData: require('../../assets/device-animations/violet-iris-real.motif') },
+  { id: 72, name: 'Curious Raccoon', category: 'Characters', framed: true, image: require('../../assets/device-animations/curious-raccoon.webp'), deviceData: require('../../assets/device-animations/curious-raccoon.motif') },
 ] as const;
 
 export type GalleryItem = (typeof galleryItems)[number];
@@ -74,3 +80,9 @@ export type GalleryCategory = GalleryItem['category'];
 
 export const galleryArt = galleryItems.map((item) => item.image);
 export const toyotaAnimation = galleryItems[66];
+export const loadingAnimation = galleryItems[67];
+export const badgeLoadingAnimation = galleryItems[68];
+export const prismVortexAnimation = galleryItems[69];
+export const emeraldRadarAnimation = galleryItems[70];
+export const violetIrisAnimation = galleryItems[71];
+export const curiousRaccoonAnimation = galleryItems[72];

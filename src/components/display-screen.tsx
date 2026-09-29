@@ -14,7 +14,7 @@ import { DisplayBadge } from '@/components/display-badge';
 import { ConnectDisplay } from '@/device/connect-display';
 import { savedDisplay, uploadAnimation } from '@/device/motif-device';
 import { recordConnection } from '@/device/connection-log';
-import { toyotaAnimation, type GalleryItem } from '@/constants/gallery-art';
+import { badgeLoadingAnimation, curiousRaccoonAnimation, emeraldRadarAnimation, loadingAnimation, prismVortexAnimation, toyotaAnimation, violetIrisAnimation, type GalleryItem } from '@/constants/gallery-art';
 import { usePreviewSelection } from '@/context/preview-selection';
 import { useDynamicNotifications } from '@/hooks/use-dynamic-notifications';
 
@@ -22,7 +22,7 @@ type HomeSection = 'My Library' | 'Individuals' | 'Packs';
 const sections: HomeSection[] = ['My Library', 'Individuals', 'Packs'];
 const INK = '#08090B';
 const CORAL = '#F05850';
-const displayItems = [toyotaAnimation];
+const displayItems = [toyotaAnimation, loadingAnimation, badgeLoadingAnimation, prismVortexAnimation, emeraldRadarAnimation, violetIrisAnimation, curiousRaccoonAnimation];
 let didShowNotificationPreview = false;
 
 export default function DisplayScreen() {
@@ -41,7 +41,7 @@ export default function DisplayScreen() {
   const heroSize = Math.min(heroWidth * 0.78, 320);
   const heroHeight = heroWidth;
   const cellWidth = (width - 64) / 3;
-  const current = displayItems[0];
+  const current = displayItems.find((item) => item.id === previewId) ?? displayItems[0];
   const heroImageSize = heroSize;
 
   const visibleItems = useMemo(() => {
@@ -90,7 +90,9 @@ export default function DisplayScreen() {
   }, [setPreviewId, setSelectedId]);
 
   const step = useCallback((direction: number) => {
-    show((currentId.current + direction + displayItems.length) % displayItems.length);
+    const index = Math.max(0, displayItems.findIndex((item) => item.id === currentId.current));
+    const next = displayItems[(index + direction + displayItems.length) % displayItems.length];
+    show(next.id);
   }, [show]);
 
   const swipeGesture = Gesture.Pan()
@@ -207,11 +209,11 @@ export default function DisplayScreen() {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Show ${item.name}`}
-          accessibilityState={{ selected: previewId === 0 }}
-          onPress={() => show(0, true)}
-          style={({ pressed }) => [styles.cell, { width: cellWidth, height: cellWidth }, previewId === 0 && styles.cellActive, pressed && styles.pressed]}>
+          accessibilityState={{ selected: previewId === item.id }}
+          onPress={() => show(item.id, true)}
+          style={({ pressed }) => [styles.cell, { width: cellWidth, height: cellWidth }, previewId === item.id && styles.cellActive, pressed && styles.pressed]}>
           <DisplayBadge item={item} size={cellWidth * 0.78} />
-          {selectedId === 0 && <View style={styles.selectedDot} />}
+          {selectedId === item.id && <View style={styles.selectedDot} />}
         </Pressable>
       )}
     />

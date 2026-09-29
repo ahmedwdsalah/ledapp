@@ -316,7 +316,9 @@ export async function uploadAnimation(assetModule: number, onProgress?: (percent
     }
     if (!accepted) throw new Error('Display confirmation was unreadable.');
     recordConnection('Playback', `Waiting for generation ${accepted.generation}`);
-    for (let attempt = 0; attempt < 20; attempt++) {
+    // The board validates every compressed frame before committing playback.
+    const playbackDeadline = Date.now() + 120_000;
+    while (Date.now() < playbackDeadline) {
       await new Promise((resolve) => setTimeout(resolve, 400));
       const check = await fetchWithDeadline(`${base}/v1/status`, { headers }, 10000);
       if (!check.ok) throw new Error('Display status could not be confirmed.');
