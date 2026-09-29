@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Render circular radar and procedural iris loops at native display resolution."""
 from pathlib import Path
-from animation_output import publish_assets
+from animation_output import pack_animation
 import math
-import struct
-import zlib
 
 import numpy as np
 from PIL import Image
@@ -99,30 +97,12 @@ def iris(t):
 def pack(name, renderer, count, duration):
     # Test periodicity independently of the frame indexing.
     assert np.max(np.abs(np.asarray(renderer(0),dtype=int)-np.asarray(renderer(1),dtype=int))) <= 1
-    frames = [renderer(i/count) for i in range(count)]
-    output = bytearray(struct.pack('<4sBBHHH',b'MOTF',1,0,SIZE,SIZE,count))
-    for frame in frames:
-        rgb = np.asarray(frame,dtype=np.uint16)
-        pixels = ((rgb[:,:,0]>>3)<<11)|((rgb[:,:,1]>>2)<<5)|(rgb[:,:,2]>>3)
-        raw = pixels.astype('<u2').tobytes()
-        compressed = zlib.compress(raw,9)
-        assert len(raw)==460800 and zlib.decompress(compressed)==raw
-        output.extend(struct.pack('<HI',duration,len(compressed)))
-        output.extend(compressed)
-    assert len(output)<=4*1024*1024, (name,len(output))
-    with publish_assets(TARGET) as staging:
-        (staging/f'{name}.motif').write_bytes(output)
-        frames[0].save(staging/f'{name}-preview.png')
-        frames[0].save(staging/f'{name}.webp',save_all=True,append_images=frames[1:],duration=duration,
-                       loop=0,lossless=True,method=4)
-        with Image.open(staging/f'{name}.webp') as preview:
-            assert preview.n_frames==count
-            for index in range(count):
-                preview.seek(index)
-                preview.load()
-    print(f'PASS {name}: {count} frames, {count*duration} ms, {len(output):,} bytes',flush=True)
+    frames = [np.asarray(renderer(i/count), dtype=np.uint8) for i in range(count)]
+    durations = [duration] * count
+    length, source_count, size = pack_animation(name, frames, durations, TARGET)
+    print(f'PASS {name}: {length}/{source_count} frames, {count*duration} ms, {size:,} bytes', flush=True)
 
 
-if __name__=='__main__':
+if __name__ == '__main__':
     pack('emerald-radar',radar,60,50)
     pack('violet-iris',iris,36,90)

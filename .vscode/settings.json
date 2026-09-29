@@ -4,5 +4,8 @@
     "source.organizeImports": "explicit",
     "source.sortMembers": "explicit"
   },
-  "cmake.sourceDirectory": "/Users/ahmed/ledapp/hardware/firmware"
+  "cmake.sourceDirectory": "/Users/ahmed/ledapp/hardware/firmware",
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/hardware/firmware/build/compile_commands.json",
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "C_Cpp.errorSquiggles": "enabled"
 }

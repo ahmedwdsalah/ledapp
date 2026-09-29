@@ -65,6 +65,29 @@ static esp_err_t diagnostics_handler(httpd_req_t *req)
     return result;
 }
 
+static esp_err_t color_test_handler(httpd_req_t *req)
+{
+    if (!authorized(req)) return deny(req);
+    char query[64], value[8] = {0};
+    int pattern = -1, profile = -1;
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        if (httpd_query_key_value(query, "pattern", value, sizeof(value)) == ESP_OK) pattern = atoi(value);
+        value[0] = 0;
+        if (httpd_query_key_value(query, "profile", value, sizeof(value)) == ESP_OK) profile = atoi(value);
+    }
+    if (pattern < -1 || pattern > 24 || profile < -1 || profile > 3 ||
+        (profile >= 0 && motif_player_set_color_profile((uint8_t)profile) != ESP_OK) ||
+        (pattern >= 0 && motif_player_show_color_test((uint8_t)pattern) != ESP_OK)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "pattern 0..24 (24 resumes), profile 0..3");
+        return ESP_FAIL;
+    }
+    char body[64];
+    snprintf(body, sizeof(body), "{\"pattern\":%d,\"profile\":%u}", pattern,
+             (unsigned)motif_player_color_profile());
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, body);
+}
+
 static esp_err_t upload_handler(httpd_req_t *req)
 {
     if (!authorized(req)) return deny(req);
@@ -134,14 +157,8 @@ static esp_err_t upload_handler(httpd_req_t *req)
     }
     if (fclose(out) != 0) { valid = false; failure = "Display storage close failed"; }
     motif_player_set_receiving(false);
-    unsigned width = header[6] | (header[7] << 8);
-    unsigned height = header[8] | (header[9] << 8);
-    unsigned frames = header[10] | (header[11] << 8);
     if (valid && remaining != 0) failure = "Upload ended before all bytes arrived";
-    else if (valid && memcmp(header, "MOTF", 4) != 0) failure = "Animation signature is invalid";
-    else if (valid && (header[4] != 1 || header[5] != 0)) failure = "Animation version is unsupported";
-    else if (valid && (width != 480 || height != 480)) failure = "Animation must be 480 by 480";
-    else if (valid && (frames == 0 || frames > 255)) failure = "Animation frame count is invalid";
+    else if (valid) failure = motif_player_header_problem(header, req->content_len);
     valid = valid && failure == NULL;
     if (!valid) {
         motif_diag_record("upload_invalid", received_total);
@@ -235,10 +252,12 @@ esp_err_t motif_http_start(void)
     if (err != ESP_OK) return err;
     httpd_uri_t status = {.uri = "/v1/status", .method = HTTP_GET, .handler = status_handler};
     httpd_uri_t diagnostics = {.uri = "/v1/diagnostics", .method = HTTP_GET, .handler = diagnostics_handler};
+    httpd_uri_t color_test = {.uri = "/v1/color-test", .method = HTTP_GET, .handler = color_test_handler};
     httpd_uri_t upload = {.uri = "/v1/animation", .method = HTTP_POST, .handler = upload_handler};
     httpd_uri_t firmware = {.uri = "/v1/firmware", .method = HTTP_POST, .handler = firmware_upload_handler};
     err = httpd_register_uri_handler(s_server, &status);
     if (err == ESP_OK) err = httpd_register_uri_handler(s_server, &diagnostics);
+    if (err == ESP_OK) err = httpd_register_uri_handler(s_server, &color_test);
     if (err == ESP_OK) err = httpd_register_uri_handler(s_server, &upload);
     if (err == ESP_OK) err = httpd_register_uri_handler(s_server, &firmware);
     if (err != ESP_OK) motif_http_stop();

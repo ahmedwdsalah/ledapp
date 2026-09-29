@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Render an antialiased radial spinner and pack native RGB565 playback frames."""
 from pathlib import Path
-from animation_output import publish_assets
+from animation_output import pack_animation
 import math
-import struct
-import zlib
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -39,24 +37,7 @@ def render(index):
 
 
 assert np.array_equal(np.asarray(render(0)), np.asarray(render(FRAMES)))
-frames = [render(index) for index in range(FRAMES)]
+frames = [np.asarray(render(index), dtype=np.uint8) for index in range(FRAMES)]
 durations = [34 if index % 3 == 2 else 33 for index in range(FRAMES)]
-output = bytearray(struct.pack('<4sBBHHH', b'MOTF', 1, 0, SIZE, SIZE, FRAMES))
-for frame, duration in zip(frames, durations):
-    rgb = np.asarray(frame, dtype=np.uint16)
-    pixels = ((rgb[:, :, 0] >> 3) << 11) | ((rgb[:, :, 1] >> 2) << 5) | (rgb[:, :, 2] >> 3)
-    raw = pixels.astype('<u2').tobytes()
-    compressed = zlib.compress(raw, 9)
-    assert len(raw) == SIZE * SIZE * 2 and zlib.decompress(compressed) == raw
-    output.extend(struct.pack('<HI', duration, len(compressed)))
-    output.extend(compressed)
-assert len(output) <= 4 * 1024 * 1024
-TARGET.mkdir(parents=True, exist_ok=True)
-with publish_assets(TARGET) as staging:
-    (staging / 'badge-loading.motif').write_bytes(output)
-    frames[0].save(staging / 'badge-loading.webp', save_all=True, append_images=frames[1:],
-                   duration=durations, loop=0, lossless=True, method=6)
-    frames[0].save(staging / 'badge-loading-preview.png')
-    with Image.open(staging / 'badge-loading.webp') as preview:
-        assert preview.n_frames == FRAMES and preview.size == (SIZE, SIZE)
-print(f'PASS: {FRAMES} frames, {sum(durations)} ms seamless loop, {len(output):,} bytes, native {SIZE}×{SIZE}')
+count, source_count, size = pack_animation('badge-loading', frames, durations, TARGET)
+print(f'PASS badge-loading: {count}/{source_count} frames, {sum(durations)} ms seamless loop, {size:,} bytes, native {SIZE}×{SIZE}')

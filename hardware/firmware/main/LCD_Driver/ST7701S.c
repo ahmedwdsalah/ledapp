@@ -441,7 +441,7 @@ void LCD_Init(void)
         .psram_trans_align = 64,
         .num_fbs = EXAMPLE_LCD_NUM_FB,
 #if CONFIG_EXAMPLE_USE_BOUNCE_BUFFER
-        .bounce_buffer_size_px = 10 * EXAMPLE_LCD_H_RES,
+        .bounce_buffer_size_px = 16 * EXAMPLE_LCD_H_RES,
 #endif
         .clk_src = LCD_CLK_SRC_DEFAULT,
         .disp_gpio_num = EXAMPLE_PIN_NUM_DISP_EN,
@@ -499,7 +499,9 @@ void LCD_Init(void)
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Backlight program
 
-uint8_t LCD_Backlight = 70;
+// 85 gives the IPS panel more usable luminance without driving the LED at its
+// absolute limit. This improves perceived contrast while preserving panel color.
+uint8_t LCD_Backlight = 85;
 static ledc_channel_config_t ledc_channel;
 void Backlight_Init(void)
 {

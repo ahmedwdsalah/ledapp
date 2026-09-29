@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Render a seamless neon vortex for the native circular Motif display."""
 from pathlib import Path
-from animation_output import publish_assets
+from animation_output import pack_animation
 import math
-import struct
-import zlib
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
@@ -56,26 +54,8 @@ def render(index):
 
 
 assert np.array_equal(np.asarray(render(0)), np.asarray(render(FRAMES)))
-frames = [render(i) for i in range(FRAMES)]
-durations = [50] * FRAMES
-output = bytearray(struct.pack('<4sBBHHH', b'MOTF', 1, 0, SIZE, SIZE, FRAMES))
-for frame, duration in zip(frames, durations):
-    rgb = np.asarray(frame, dtype=np.uint16)
-    pixels = ((rgb[:, :, 0] >> 3) << 11) | ((rgb[:, :, 1] >> 2) << 5) | (rgb[:, :, 2] >> 3)
-    raw = pixels.astype('<u2').tobytes()
-    compressed = zlib.compress(raw, 9)
-    assert len(raw) == SIZE * SIZE * 2 and zlib.decompress(compressed) == raw
-    output.extend(struct.pack('<HI', duration, len(compressed)))
-    output.extend(compressed)
-assert len(output) <= 4 * 1024 * 1024, len(output)
-with publish_assets(TARGET) as staging:
-    (staging / 'prism-vortex.motif').write_bytes(output)
-    frames[0].save(staging / 'prism-vortex.webp', save_all=True, append_images=frames[1:],
-                   duration=durations, loop=0, lossless=True, method=6)
-    frames[0].save(staging / 'prism-vortex-preview.png')
-    with Image.open(staging / 'prism-vortex.webp') as preview:
-        assert preview.n_frames == FRAMES and preview.size == (SIZE, SIZE)
-        for i in range(FRAMES):
-            preview.seek(i)
-            preview.load()
-print(f'PASS: {FRAMES} frames, {sum(durations)} ms loop, {len(output):,} bytes, native {SIZE}×{SIZE}')
+frames = [np.asarray(render(i), dtype=np.uint8) for i in range(FRAMES)]
+LOOP_MS = FRAMES * 50
+durations = [round((index+1)*LOOP_MS/FRAMES)-round(index*LOOP_MS/FRAMES) for index in range(FRAMES)]
+count, source_count, size = pack_animation('prism-vortex', frames, durations, TARGET)
+print(f'PASS prism-vortex: {count}/{source_count} frames, {LOOP_MS} ms loop, {size:,} bytes, native {SIZE}×{SIZE}')

@@ -8,6 +8,11 @@
 #define MOTIF_ANIMATION_PART_PATH "/media/current.motif.part"
 #define MOTIF_ANIMATION_BACKUP_PATH "/media/current.motif.bak"
 
+// Frame-stream flags understood by this firmware; anything else is rejected.
+#define MOTIF_FLAG_DELTA 1
+#define MOTIF_FLAG_SPLIT 2
+#define MOTIF_SUPPORTED_FLAGS (MOTIF_FLAG_DELTA | MOTIF_FLAG_SPLIT)
+
 typedef enum {
     MOTIF_PLAYER_IDLE = 0,
     MOTIF_PLAYER_APPLYING,
@@ -28,3 +33,7 @@ void motif_player_set_network_error(void);
 void motif_player_set_receiving(bool receiving);
 void motif_player_set_receive_progress(uint8_t percent);
 bool motif_player_is_receiving(void);
+esp_err_t motif_player_show_color_test(uint8_t pattern);
+esp_err_t motif_player_set_color_profile(uint8_t profile);
+uint8_t motif_player_color_profile(void);
+const char *motif_player_header_problem(const uint8_t *header, long length);
