@@ -1,6 +1,6 @@
 import { Asset } from 'expo-asset';
 import { fetch } from 'expo/fetch';
-import { File } from 'expo-file-system';
+import { File, UploadType } from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
 import BleManager from 'react-native-ble-manager';
 import { PermissionsAndroid, Platform } from 'react-native';
@@ -239,7 +239,44 @@ export async function getDisplayDiagnostics(ip: string): Promise<BoardEvent[]> {
   return result.events;
 }
 
-export async function uploadAnimation(assetModule: number): Promise<void> {
+async function sendAnimation(file: File, url: string, token: string, onProgress?: (percent: number) => void) {
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), 180000);
+  const task = file.createUploadTask(url, {
+    httpMethod: 'POST',
+    uploadType: UploadType.BINARY_CONTENT,
+    mimeType: 'application/x-motif-animation',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/x-motif-animation' },
+    signal: controller.signal,
+    onProgress: ({ bytesSent, totalBytes }) => onProgress?.(totalBytes ? bytesSent / totalBytes : 0),
+  });
+  try {
+    const response = await task.uploadAsync();
+    return { status: response.status, body: response.body };
+  } finally {
+    clearTimeout(deadline);
+    task.release();
+  }
+}
+
+async function sendWithRetry(file: File, url: string, token: string, onProgress?: (percent: number) => void) {
+  try {
+    return await sendAnimation(file, url, token, onProgress);
+  } catch (error) {
+    const message = displayError(error, 'network connection closed');
+    recordConnection('Upload error', message);
+    recordConnection('Upload', 'Retrying once');
+    try {
+      return await sendAnimation(file, url, token, onProgress);
+    } catch (retryError) {
+      const retryMessage = displayError(retryError, 'network connection closed');
+      recordConnection('Upload error', retryMessage);
+      throw new Error(`Upload failed: ${retryMessage}`);
+    }
+  }
+}
+
+export async function uploadAnimation(assetModule: number, onProgress?: (percent: number) => void): Promise<void> {
   if (uploadInProgress) throw new Error('An upload is already running.');
   uploadInProgress = true;
   try {
@@ -252,24 +289,32 @@ export async function uploadAnimation(assetModule: number): Promise<void> {
     if (!asset.localUri) throw new Error('Animation file is unavailable.');
     const file = new File(asset.localUri);
     if (file.size > 4 * 1024 * 1024) throw new Error('Animation is too large for this display.');
-    const payload = await file.bytes();
-    recordConnection('Upload', `Loaded ${payload.length} animation bytes`);
+    recordConnection('Upload', `Loaded ${file.size} animation bytes`);
+    let sentBucket = -1;
+    const progress = (percent: number) => {
+      onProgress?.(percent);
+      const bucket = Math.min(10, Math.floor(percent * 10));
+      if (bucket > sentBucket) {
+        sentBucket = bucket;
+        recordConnection('Upload', `Sent ${bucket * 10}%`);
+      }
+    };
     const base = `http://${display.ip}:8080`;
     const headers = { Authorization: `Bearer ${saved.token}` };
-    let response: Response;
-    try {
-      recordConnection('Upload', `Sending to ${display.ip}:8080`);
-      response = await fetchWithDeadline(`${base}/v1/animation`, {
-        method: 'POST', headers: { ...headers, 'Content-Type': 'application/x-motif-animation' }, body: payload,
-      }, 180000);
-    } catch (error) {
-      const message = displayError(error, 'network connection closed');
-      recordConnection('Upload error', message);
-      throw new Error(`Upload failed: ${message}`);
+    recordConnection('Upload', `Sending to ${display.ip}:8080`);
+    const result = await sendWithRetry(file, `${base}/v1/animation`, saved.token, progress);
+    recordConnection('Upload', `Board response HTTP ${result.status}`);
+    if (result.status !== 202) {
+      const reason = result.body.trim();
+      throw new Error(`Display rejected the animation (${result.status})${reason ? `: ${reason}` : '.'}`);
     }
-    recordConnection('Upload', `Board response HTTP ${response.status}`);
-    if (!response.ok) throw new Error(`Display rejected the animation (${response.status}).`);
-    const accepted = await response.json() as { generation: number };
+    let accepted: { generation: number } | null;
+    try {
+      accepted = JSON.parse(result.body) as { generation: number };
+    } catch {
+      accepted = null;
+    }
+    if (!accepted) throw new Error('Display confirmation was unreadable.');
     recordConnection('Playback', `Waiting for generation ${accepted.generation}`);
     for (let attempt = 0; attempt < 20; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 400));

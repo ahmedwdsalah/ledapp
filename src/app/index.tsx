@@ -10,7 +10,7 @@ import Animated, { FadeIn, FadeInUp, useReducedMotion } from 'react-native-reani
 
 import { galleryItems } from '@/constants/gallery-art';
 import { usePreviewSelection } from '@/context/preview-selection';
-import InfiniteMenu from '@/shared/components/organisms/infinite-menu';
+import { InfiniteMenu } from '@/shared/components/organisms/infinite-menu';
 
 export default function WelcomeScreen() {
   const insets = useSafeAreaInsets();

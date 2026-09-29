@@ -87,4 +87,6 @@ const styles = StyleSheet.create({
   },
 });
 
+NotificationBody.displayName = "NotificationBody";
+
 export { NotificationBody };

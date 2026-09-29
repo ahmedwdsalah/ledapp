@@ -26,3 +26,5 @@ void motif_player_clear_passkey(void);
 void motif_player_set_connection(bool connected, bool joining);
 void motif_player_set_network_error(void);
 void motif_player_set_receiving(bool receiving);
+void motif_player_set_receive_progress(uint8_t percent);
+bool motif_player_is_receiving(void);

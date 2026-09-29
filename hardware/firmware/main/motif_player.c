@@ -4,9 +4,8 @@
 #include <string.h>
 #include <unistd.h>
 #include "esp_heap_caps.h"
+#include "esp_littlefs.h"
 #include "esp_log.h"
-#include "esp_partition.h"
-#include "esp_spiffs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 #include "lvgl.h"
@@ -40,6 +39,7 @@ static bool s_connected;
 static bool s_joining;
 static bool s_network_error;
 static bool s_receiving;
+static uint8_t s_receive_percent;
 static bool s_status_dirty;
 static motif_player_state_t s_state = MOTIF_PLAYER_IDLE;
 
@@ -48,26 +48,14 @@ static uint32_t read32(const uint8_t *bytes) {
     return bytes[0] | ((uint32_t)bytes[1] << 8) | ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
 }
 
-static bool media_is_blank(void)
-{
-    const esp_partition_t *part = esp_partition_find_first(
-        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "media");
-    if (!part) return false;
-    uint8_t probe[256];
-    if (esp_partition_read(part, 0, probe, sizeof(probe)) != ESP_OK) return false;
-    for (size_t i = 0; i < sizeof(probe); ++i) if (probe[i] != 0xff) return false;
-    return true;
-}
-
 esp_err_t motif_player_mount(void)
 {
-    const esp_vfs_spiffs_conf_t conf = {
+    const esp_vfs_littlefs_conf_t conf = {
         .base_path = "/media",
         .partition_label = "media",
-        .max_files = 5,
-        .format_if_mount_failed = media_is_blank(),
+        .format_if_mount_failed = true,
     };
-    esp_err_t err = esp_vfs_spiffs_register(&conf);
+    esp_err_t err = esp_vfs_littlefs_register(&conf);
     if (err != ESP_OK) ESP_LOGE(TAG, "Media mount failed: %s", esp_err_to_name(err));
     return err;
 }
@@ -274,7 +262,18 @@ void motif_player_set_receiving(bool receiving)
 {
     portENTER_CRITICAL(&s_mux);
     s_receiving = receiving;
+    if (receiving) s_receive_percent = 0;
     s_status_dirty = true;
+    portEXIT_CRITICAL(&s_mux);
+}
+
+void motif_player_set_receive_progress(uint8_t percent)
+{
+    portENTER_CRITICAL(&s_mux);
+    if (s_receive_percent != percent) {
+        s_receive_percent = percent;
+        s_status_dirty = true;
+    }
     portEXIT_CRITICAL(&s_mux);
 }
 
@@ -282,12 +281,14 @@ void motif_player_loop(void)
 {
     uint32_t passkey, pending;
     bool connected, joining, receiving, network_error, status_dirty, passkey_dirty;
+    uint8_t receive_percent;
     portENTER_CRITICAL(&s_mux);
     passkey = s_passkey;
     pending = s_pending_generation;
     connected = s_connected;
     joining = s_joining;
     receiving = s_receiving;
+    receive_percent = s_receive_percent;
     network_error = s_network_error;
     status_dirty = s_status_dirty;
     passkey_dirty = s_passkey_dirty;
@@ -301,7 +302,9 @@ void motif_player_loop(void)
             lv_label_set_text(s_message, code);
             lv_label_set_text(s_detail, "Enter this code on your phone");
         } else if (receiving) {
-            lv_label_set_text(s_message, "Receiving");
+            char text[24];
+            snprintf(text, sizeof(text), "Receiving %u%%", (unsigned)receive_percent);
+            lv_label_set_text(s_message, text);
             lv_label_set_text(s_detail, "Keep the display powered on");
         } else if (joining) {
             lv_label_set_text(s_message, "Connecting");
@@ -319,7 +322,7 @@ void motif_player_loop(void)
             lv_label_set_text(s_message, "MOTIF");
             lv_label_set_text(s_detail, "Open Motif to connect");
         }
-        if (s_animation) {
+        if (s_animation && !receiving) {
             lv_obj_add_flag(s_message, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(s_detail, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(s_ring, LV_OBJ_FLAG_HIDDEN);
@@ -354,7 +357,7 @@ void motif_player_loop(void)
         motif_diag_record(applied ? "animation_applied" : "animation_apply_failed", pending);
     }
 
-    if (s_animation && (s_state == MOTIF_PLAYER_PLAYING || s_state == MOTIF_PLAYER_ERROR) &&
+    if (s_animation && !receiving && (s_state == MOTIF_PLAYER_PLAYING || s_state == MOTIF_PLAYER_ERROR) &&
         (int32_t)(lv_tick_get() - s_frame_due) >= 0) {
         if (!draw_next_frame()) {
             ESP_LOGE(TAG, "Frame decompression failed");
@@ -369,3 +372,4 @@ void motif_player_loop(void)
 }
 
 bool motif_player_has_animation(void) { return s_animation != NULL; }
+bool motif_player_is_receiving(void) { return s_receiving; }

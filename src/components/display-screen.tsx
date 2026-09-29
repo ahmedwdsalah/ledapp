@@ -36,6 +36,7 @@ export default function DisplayScreen() {
   const [section, setSection] = useState<HomeSection>('Individuals');
   const [connectOpen, setConnectOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadPercent, setUploadPercent] = useState(0);
   const heroWidth = width - 32;
   const heroSize = Math.min(heroWidth * 0.78, 320);
   const heroHeight = heroWidth;
@@ -111,9 +112,10 @@ export default function DisplayScreen() {
   async function uploadToDevice() {
     if (uploading) return;
     setUploading(true);
+    setUploadPercent(0);
     try {
       if (!(await savedDisplay())) { setConnectOpen(true); return; }
-      await uploadAnimation(current.deviceData);
+      await uploadAnimation(current.deviceData, (percent) => setUploadPercent(Math.min(100, Math.round(percent * 100))));
       setSelectedId(previewId);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       notify(current, 'Playing on display');
@@ -173,7 +175,7 @@ export default function DisplayScreen() {
                 <Text numberOfLines={1} style={styles.heroSubtitle}>{current.category}</Text>
               </View>
               <Pressable accessibilityRole="button" accessibilityLabel={`Upload ${current.name} to display`} accessibilityHint="Long press to connect a different display" onPress={uploadToDevice} onLongPress={() => setConnectOpen(true)} disabled={uploading} style={({ pressed }) => [styles.uploadButton, pressed && styles.pressed]}>
-                <Text style={styles.uploadText}>{uploading ? 'Uploading…' : 'Upload to Device'}</Text>
+                <Text style={styles.uploadText}>{uploading ? (uploadPercent >= 100 ? 'Confirming…' : `Uploading… ${uploadPercent}%`) : 'Upload to Device'}</Text>
               </Pressable>
             </BlurView>
           </View>

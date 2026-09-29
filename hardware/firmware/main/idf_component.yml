@@ -1,3 +1,6 @@
 dependencies:
   idf: ">=4.4"
   lvgl/lvgl: "~8.2.0"
+  joltwallet/littlefs: "^1.14.0"
+  espressif/esp_lcd_touch_gt911: "^1.2.0"
+  espressif/esp_io_expander_tca9554: "^2.0.0"

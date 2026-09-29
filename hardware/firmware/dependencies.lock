@@ -1,8 +1,66 @@
 dependencies:
+  espressif/esp_io_expander:
+    component_hash: 7b7f91270172e46ca4597e3874f48d8412e280e8c295559f5922ec38656e3e5f
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4.2'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.2.1
+  espressif/esp_io_expander_tca9554:
+    component_hash: ee94a439ade1c17129a491efe572c600899306a2ffadbde491852d95333e28b4
+    dependencies:
+    - name: espressif/esp_io_expander
+      registry_url: https://components.espressif.com
+      require: public
+      version: ^1.2.0
+    - name: idf
+      require: private
+      version: '>=5.2'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.0.3
+  espressif/esp_lcd_touch:
+    component_hash: 3f85a7d95af876f1a6ecca8eb90a81614890d0f03a038390804e5a77e2caf862
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4.2'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.2.1
+  espressif/esp_lcd_touch_gt911:
+    component_hash: 737bdf29e0823eacf041381e81db2aaf5d378f3b5417df7f415f83319e3e790b
+    dependencies:
+    - name: espressif/esp_lcd_touch
+      registry_url: https://components.espressif.com
+      require: public
+      version: ^1.2.0
+    - name: idf
+      require: private
+      version: '>=5.2'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.2.1
   idf:
     source:
       type: idf
     version: 5.3.5
+  joltwallet/littlefs:
+    component_hash: 3af20a3d75c49db9dc2286fd50862c34055c9f578419ad1f2bf7ed3ed01391fe
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.22.3
   lvgl/lvgl:
     component_hash: 2567762b19953712ee38789ad8f8de57ad1f6e39283adefbbfc7184ffe662831
     dependencies: []
@@ -11,8 +69,11 @@ dependencies:
       type: service
     version: 8.2.0
 direct_dependencies:
+- espressif/esp_io_expander_tca9554
+- espressif/esp_lcd_touch_gt911
 - idf
+- joltwallet/littlefs
 - lvgl/lvgl
-manifest_hash: 0cc956a415379fe58bd10637e996dc028dfd50ce4f1ad884c1ff265dfd794439
+manifest_hash: 02f719eea64f0ebac062f1c20449b94d980520f13083dd058fb0cada5c5b467b
 target: esp32s3
 version: 2.0.0

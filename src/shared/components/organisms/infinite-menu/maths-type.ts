@@ -2,21 +2,21 @@ type Brand<T, B extends string> = T & { readonly __brand: B };
 
 type Radians = Brand<number, "radians">;
 
-interface Vec3 extends Readonly<{
+type Vec3 = Readonly<{
   x: number;
   y: number;
   z: number;
-}> {}
+}>;
 
-interface UnitVec3 extends Brand<Vec3, "unit-vec3"> {}
+type UnitVec3 = Brand<Vec3, "unit-vec3">;
 
-interface Quat extends Readonly<{
+type Quat = Readonly<{
   x: number;
   y: number;
   z: number;
   w: number;
-}> {}
+}>;
 
-interface UnitQuat extends Brand<Quat, "unit-quat"> {}
+type UnitQuat = Brand<Quat, "unit-quat">;
 
 export type { Quat, UnitQuat, Vec3, UnitVec3, Radians };

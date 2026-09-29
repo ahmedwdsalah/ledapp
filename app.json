@@ -31,7 +31,8 @@
         "android.permission.BLUETOOTH",
         "android.permission.BLUETOOTH_ADMIN",
         "android.permission.BLUETOOTH_CONNECT"
-      ]
+      ],
+      "package": "com.ahmedsalah998.motif"
     },
     "web": {
       "output": "static",
@@ -42,7 +43,10 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#050507"
+          "backgroundColor": "#050507",
+          "android": {
+            "image": "./assets/images/motif-icon.png"
+          }
         }
       ],
       "expo-asset",

@@ -98,4 +98,6 @@ const styles = StyleSheet.create({
   },
 });
 
+Content.displayName = "Content";
+
 export { Content };

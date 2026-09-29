@@ -103,6 +103,8 @@ const DiscComponent: React.FC<IDiscComponent> = memo<IDiscComponent>(
   },
 );
 
+DiscComponent.displayName = "DiscComponent";
+
 export const InfiniteMenu: React.FC<IInfiniteMenu> &
   React.FunctionComponent<IInfiniteMenu> = memo<IInfiniteMenu>(
   ({
@@ -547,6 +549,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
 });
+
+InfiniteMenu.displayName = "InfiniteMenu";
 
 export default memo<
   React.FC<IInfiniteMenu> & React.FunctionComponent<IInfiniteMenu>

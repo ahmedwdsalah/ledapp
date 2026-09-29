@@ -136,4 +136,6 @@ const styles = StyleSheet.create({
   },
 });
 
+Root.displayName = "Root";
+
 export { Root };

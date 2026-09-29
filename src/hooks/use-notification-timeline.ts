@@ -52,7 +52,9 @@ const useNotificationTimeline = ({
   const exitRef = useRef<() => void>(() => {});
   const dismissHandler = useRef(onDismiss);
 
-  dismissHandler.current = onDismiss;
+  useEffect(() => {
+    dismissHandler.current = onDismiss;
+  }, [onDismiss]);
 
   const clearTimer = useCallback(() => {
     if (timer.current) {
@@ -158,7 +160,9 @@ const useNotificationTimeline = ({
     );
   }, [clearTimer, drop, expand, reveal, settle, tint]);
 
-  exitRef.current = exit;
+  useEffect(() => {
+    exitRef.current = exit;
+  }, [exit]);
 
   const trigger = useCallback(
     (next: IDynamicNotification) => {

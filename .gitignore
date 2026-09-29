@@ -47,6 +47,7 @@ example
 /hardware/vendor/*.zip
 /hardware/toolchains/
 /hardware/firmware/build/
+/hardware/firmware/.cache/
 /hardware/firmware/managed_components/
 /hardware/firmware/*.log
 /hardware/firmware/sdkconfig.pre-*

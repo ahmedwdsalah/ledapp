@@ -145,4 +145,6 @@ const styles = StyleSheet.create({
   },
 });
 
+Gooey.displayName = "Gooey";
+
 export { Gooey };
